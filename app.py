@@ -9,7 +9,7 @@ supabase_key = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(supabase_url, supabase_key)
 
   # --- SHARED ON ALL PAGES ---
-st.logo("assets/sikopii.png")
+st.logo("assets/lobster.png")
 st.sidebar.markdown("Dibuat oleh Kelompok 13")
 
 def sign_up(email, password):
