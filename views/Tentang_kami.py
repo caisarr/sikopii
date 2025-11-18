@@ -10,14 +10,13 @@ def show_saran_form():
     saran_form()
 
 
-# SiKopi Profile
 col1, col2 = st.columns(2, gap="small", vertical_alignment="center")
 with col1:
- st.image("./assets/sikopi1.png", width=230)
+ st.image("./assets/lobster1.png", width=230)
 with col2:
-   st.title("Si Kopi", anchor=False)
+   st.title("Lobster ID", anchor=False)
    st.write(
-      "Need coffe? just contact Si Kopi"
+      "Kami jual lobster"
    )
    if st.button("Berikan saran"):
         show_saran_form()
@@ -28,10 +27,10 @@ st.write("\n")
 st.subheader("Lebih banyak tentang kami", anchor=False)
 st.write(
     """
-    - Hadir sebagai paltform yang mengkhususkan penjualan kopi
-    - Kopi yang dijual berasal dari Petani Kopi Wirogomo
-    - Memudahkan pembeli untuk memilih jenis kopi yang ingin dibeli
-    - Melayani pengiriman seluruh indonesia!
+    - Lobster enak
+    - Aku cinta lobster
+    - Lobster adalah temanku
+    - Hidup Lobster
     """
 )
 
