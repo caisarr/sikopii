@@ -75,7 +75,7 @@ def main_app(user_email):
          sign_out()
 
 def auth_screen():
-    st.title("Login untuk Menuju Si Kopi")
+    st.title("Login untuk Mengakses Lobster ID")
     option = st.selectbox("Pilih Tindakan:", ["Masuk", "Buat Akun"])
     email = st.text_input("Email")
     password = st.text_input("Password", type="password")
