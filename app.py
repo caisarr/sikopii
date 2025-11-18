@@ -10,7 +10,7 @@ supabase: Client = create_client(supabase_url, supabase_key)
 
   # --- SHARED ON ALL PAGES ---
 st.logo("assets/sikopii.png")
-st.sidebar.markdown("Dibuat oleh Kelompok 7")
+st.sidebar.markdown("Dibuat oleh Kelompok 13")
 
 def sign_up(email, password):
     try:
