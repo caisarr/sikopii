@@ -8,10 +8,12 @@ def get_products():
     return supabase.table("products").select("*").execute().data
 
 # membuat order
-def create_order(total_amount, address):
+def create_order(total_amount, address, midtrans_id): # <-- Tambahkan midtrans_id di parameter
     return supabase.table("orders").insert({
         "total_amount": total_amount,
-        "address": address
+        "address": address,
+        "midtrans_order_id": midtrans_id, # <-- Simpan ID Midtrans
+        "status": "pending" # Pastikan status default-nya pending
     }).execute().data[0]
 
 # Menambahkan item pesanan
