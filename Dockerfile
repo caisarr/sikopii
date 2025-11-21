@@ -14,4 +14,5 @@ COPY . /app
 
 # Perintah untuk menjalankan aplikasi (sesuai dengan Procfile sebelumnya)
 # Railway akan menggunakan ini secara default jika Procfile tidak didefinisikan secara eksplisit
-CMD ["uvicorn", "webhook_server:app", "--host", "0.0.0.0", "--port", "8080"]
+# BENAR: Menggunakan format shell untuk memastikan $PORT diinterpretasikan
+CMD uvicorn webhook_server:app --host 0.0.0.0 --port $PORT
