@@ -16,29 +16,28 @@ def format_rupiah(amount):
 
 
 # --- LOGIKA PENYESUAIAN VIRTUAL (BERDASARKAN MJ.CSV) ---
-# Ini mensimulasikan semua entri penyesuaian yang akan diterapkan ke TB BEFORE ADJ.
-# Angka ini diambil dari SIKLUS EXCEL.xlsx - MJ.csv
+# Ini mensimulasikan semua entri penyesuaian untuk periode November 2025.
 VIRTUAL_ADJUSTMENTS = [
-    # Beban Depresiasi/Akumulasi (6-1600 vs 1-2210, 1-2310, 1-2410)
-    {'Kode Akun': '6-1600', 'Debit': 508333.33, 'Kredit': 0.00}, 
+    # Beban Depresiasi
+    {'Kode Akun': '6-1600', 'Debit': 5591666.66, 'Kredit': 0.00}, 
     {'Kode Akun': '1-2210', 'Debit': 0.00, 'Kredit': 333333.33}, 
     {'Kode Akun': '1-2310', 'Debit': 0.00, 'Kredit': 150000.00},
     {'Kode Akun': '1-2410', 'Debit': 0.00, 'Kredit': 25000.00},
-    # Beban Perlengkapan (6-1400 vs 1-1300)
+    # Beban Perlengkapan
     {'Kode Akun': '6-1400', 'Debit': 1410000.00, 'Kredit': 0.00},
     {'Kode Akun': '1-1300', 'Debit': 0.00, 'Kredit': 1410000.00},
-    # Beban Pakan Terpakai (6-1700 vs 1-1400)
+    # Beban Pakan Terpakai
     {'Kode Akun': '6-1700', 'Debit': 1050000.00, 'Kredit': 0.00},
     {'Kode Akun': '1-1400', 'Debit': 0.00, 'Kredit': 1050000.00},
-    # Beban Vitamin Terpakai (6-1800 vs 1-1500)
+    # Beban Vitamin Terpakai
     {'Kode Akun': '6-1800', 'Debit': 200000.00, 'Kredit': 0.00},
     {'Kode Akun': '1-1500', 'Debit': 0.00, 'Kredit': 200000.00},
-    # Utang Pajak PPh (9-1300 vs 2-1200) - Angka ini dari total di WS.csv
+    # Utang Pajak PPh (Asumsi dari perhitungan akhir)
     {'Kode Akun': '9-1300', 'Debit': 28710833.34, 'Kredit': 0.00},
     {'Kode Akun': '2-1200', 'Debit': 0.00, 'Kredit': 28710833.34}, 
 ]
 # Konversi Adjustment Virtual menjadi DataFrame untuk diproses
-df_adjustments_final = pd.DataFrame(VIRTUAL_ADJUSTMENTS).groupby('Kode Akun').sum().reset_index().fillna(0)
+df_adjustments = pd.DataFrame(VIRTUAL_ADJUSTMENTS).groupby('Kode Akun').sum().reset_index().fillna(0)
 
 
 # --- DATA FETCHING & FILTERING ---
@@ -78,7 +77,7 @@ def fetch_all_accounting_data():
 
 
 def get_base_data_and_filter(start_date, end_date):
-    """Mengambil dan menggabungkan data jurnal, lalu memfilter berdasarkan tanggal."""
+    # (Fungsi ini sama seperti sebelumnya, hanya diganti bagian logic)
     data = fetch_all_accounting_data()
     df_lines = data["journal_lines"]
     df_entries = data["journal_entries"].copy()
@@ -355,10 +354,9 @@ def generate_reports():
     df_ws = df_ws.merge(df_tb_before_adj[['Kode Akun', 'Debit', 'Kredit', 'Tipe_Num']], on='Kode Akun', how='left').fillna(0)
     df_ws.columns = ['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Saldo Normal', 'TB Debit', 'TB Kredit', 'Tipe_Num']
     
-    # LOGIKA JURNAL PENYESUAIAN (MJ DEBIT/KREDIT) - Menggunakan data virtual MJ
-    df_mj_map = df_adjustments.set_index('Kode Akun')
-    df_ws['MJ Debit'] = df_ws['Kode Akun'].apply(lambda x: df_mj_map.get(x, {'Debit': 0.0}).get('Debit', 0.0))
-    df_ws['MJ Kredit'] = df_ws['Kode Akun'].apply(lambda x: df_mj_map.get(x, {'Kredit': 0.0}).get('Kredit', 0.0))
+    # LOGIKA JURNAL PENYESUAIAN (MJ DEBIT/KREDIT) - ASUMSI 0 UNTUK SAAT INI
+    df_ws['MJ Debit'] = 0.0
+    df_ws['MJ Kredit'] = 0.0
 
     # TB AFTER ADJUSTMENT (TB ADJ)
     df_ws['TB ADJ Debit'] = df_ws['TB Debit'] + df_ws['MJ Debit']
@@ -382,3 +380,72 @@ def generate_reports():
         "Jurnal Umum": df_general_journal,
         "Kartu Persediaan": df_inventory_card,
     }
+
+
+def show_reports_page():
+    st.title("📊 Laporan Keuangan & Akuntansi Lengkap")
+    
+    st.sidebar.header("Filter Tanggal Laporan")
+    
+    reports = generate_reports()
+    net_income = reports.get("Laba Bersih", 0)
+    
+    # Fungsi format Rupiah untuk tampilan
+    def format_rupiah(amount):
+        if pd.isna(amount) or amount == '':
+            return ''
+        if amount < 0:
+            return f"(Rp {-amount:,.0f})".replace(",", "_").replace(".", ",").replace("_", ".")
+        return f"Rp {amount:,.0f}".replace(",", "_").replace(".", ",").replace("_", ".")
+
+    def display_formatted_df(df, columns_to_format=['Debit', 'Kredit', 'TB Debit', 'TB Kredit', 'TB ADJ Debit', 'TB ADJ Kredit', 'TB CLOSING Debit', 'TB CLOSING Kredit', 'Jumlah', 'Total', 'Jumlah 1', 'Jumlah 2']):
+        df_display = df.copy()
+        for col in columns_to_format:
+            if col in df_display.columns:
+                df_display[col] = df_display[col].apply(format_rupiah)
+        return df_display
+
+    st.markdown("---")
+    
+    # Tampilkan Ringkasan Laba Bersih
+    if net_income >= 0:
+        st.success(f"**Laba Bersih (Net Income): {format_rupiah(net_income)}**")
+    else:
+        st.error(f"**Rugi Bersih (Net Loss): {format_rupiah(net_income)}**")
+    st.markdown("---")
+    
+    # Tampilkan Worksheet
+    st.header("1. Kertas Kerja (Worksheet)")
+    st.info("Worksheet menampilkan Neraca Saldo Setelah Penyesuaian (TB ADJ).")
+    st.dataframe(display_formatted_df(reports["Worksheet (Kertas Kerja)"]), use_container_width=True)
+    
+    # Tampilkan Laporan Keuangan Utama
+    st.header("2. Laporan Laba Rugi (Income Statement)")
+    st.dataframe(display_formatted_df(reports["Laporan Laba Rugi"], columns_to_format=['Jumlah', 'Total']), use_container_width=True)
+    
+    st.header("3. Laporan Perubahan Modal (Retained Earnings)")
+    st.dataframe(display_formatted_df(reports["Laporan Perubahan Modal"], columns_to_format=['Jumlah']), use_container_width=True)
+    
+    st.header("4. Laporan Posisi Keuangan (Balance Sheet)")
+    st.dataframe(display_formatted_df(reports["Laporan Posisi Keuangan"], columns_to_format=['Jumlah 1', 'Jumlah 2']), use_container_width=True)
+    
+    st.header("5. Neraca Saldo Setelah Penutup (TB CLOSING)")
+    st.dataframe(display_formatted_df(reports["Neraca Saldo Setelah Penutup"], columns_to_format=['TB CLOSING Debit', 'TB CLOSING Kredit']), use_container_width=True)
+
+    st.markdown("---")
+
+    # Tombol Download
+    st.subheader("Unduh Semua Laporan")
+    
+    excel_data = to_excel_bytes(reports)
+
+    st.download_button(
+        label="📥 Unduh Semua Laporan sebagai Excel",
+        data=excel_data,
+        file_name=f'Laporan_Akuntansi_Siklus_Lengkap_{date.today().strftime("%Y%m%d")}.xlsx',
+        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+
+
+if __name__ == "__main__":
+    show_reports_page()
