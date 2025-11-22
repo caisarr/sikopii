@@ -15,6 +15,32 @@ def format_rupiah(amount):
     return f"Rp {amount:,.0f}".replace(",", "_").replace(".", ",").replace("_", ".")
 
 
+# --- LOGIKA PENYESUAIAN VIRTUAL (BERDASARKAN MJ.CSV) ---
+# Ini mensimulasikan semua entri penyesuaian yang akan diterapkan ke TB BEFORE ADJ.
+# Angka ini diambil dari SIKLUS EXCEL.xlsx - MJ.csv
+VIRTUAL_ADJUSTMENTS = [
+    # Beban Depresiasi/Akumulasi (6-1600 vs 1-2210, 1-2310, 1-2410)
+    {'Kode Akun': '6-1600', 'Debit': 508333.33, 'Kredit': 0.00}, 
+    {'Kode Akun': '1-2210', 'Debit': 0.00, 'Kredit': 333333.33}, 
+    {'Kode Akun': '1-2310', 'Debit': 0.00, 'Kredit': 150000.00},
+    {'Kode Akun': '1-2410', 'Debit': 0.00, 'Kredit': 25000.00},
+    # Beban Perlengkapan (6-1400 vs 1-1300)
+    {'Kode Akun': '6-1400', 'Debit': 1410000.00, 'Kredit': 0.00},
+    {'Kode Akun': '1-1300', 'Debit': 0.00, 'Kredit': 1410000.00},
+    # Beban Pakan Terpakai (6-1700 vs 1-1400)
+    {'Kode Akun': '6-1700', 'Debit': 1050000.00, 'Kredit': 0.00},
+    {'Kode Akun': '1-1400', 'Debit': 0.00, 'Kredit': 1050000.00},
+    # Beban Vitamin Terpakai (6-1800 vs 1-1500)
+    {'Kode Akun': '6-1800', 'Debit': 200000.00, 'Kredit': 0.00},
+    {'Kode Akun': '1-1500', 'Debit': 0.00, 'Kredit': 200000.00},
+    # Utang Pajak PPh (9-1300 vs 2-1200) - Angka ini dari total di WS.csv
+    {'Kode Akun': '9-1300', 'Debit': 28710833.34, 'Kredit': 0.00},
+    {'Kode Akun': '2-1200', 'Debit': 0.00, 'Kredit': 28710833.34}, 
+]
+# Konversi Adjustment Virtual menjadi DataFrame untuk diproses
+df_adjustments_final = pd.DataFrame(VIRTUAL_ADJUSTMENTS).groupby('Kode Akun').sum().reset_index().fillna(0)
+
+
 # --- DATA FETCHING & FILTERING ---
 
 @st.cache_data
@@ -64,31 +90,27 @@ def get_base_data_and_filter(start_date, end_date):
         empty_merged = pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount'])
         return empty_merged, df_coa, df_movements
         
-    # Memaksa konversi tipe data DATETIME
+    # Memaksa konversi tipe data TEPAT SEBELUM FILTER
     df_entries['transaction_date'] = df_entries['transaction_date'].astype('datetime64[ns]')
     
     # Konversi filter date input ke tipe datetime
     filter_start = pd.to_datetime(start_date)
     filter_end = pd.to_datetime(end_date)
     
-    # 1. Pisahkan Jurnal Saldo Awal (ID 5) dari transaksi lainnya
-    df_saldo_awal = df_entries.loc[df_entries['id'] == 5].copy()
-    df_transaksi_lain = df_entries.loc[df_entries['id'] != 5].copy()
-
-    # 2. Filter transaksi baru berdasarkan rentang tanggal
-    df_filtered_entries = df_transaksi_lain.loc[
-        (df_transaksi_lain['transaction_date'] >= filter_start) & 
-        (df_transaksi_lain['transaction_date'] <= filter_end)
+    # 1. Filter entri jurnal berdasarkan rentang tanggal
+    df_filtered_entries = df_entries.loc[
+        (df_entries['transaction_date'] >= filter_start) & 
+        (df_entries['transaction_date'] <= filter_end)
     ].copy()
 
-    # 3. Gabungkan: Saldo Awal + Transaksi Baru
+    df_saldo_awal = df_entries.loc[df_entries['id'] == 5].copy()
+
     df_journal_entries_final = pd.concat([df_filtered_entries, df_saldo_awal]).drop_duplicates(subset=['id'], keep='first')
         
     if df_journal_entries_final.empty:
         empty_merged = pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount'])
         return empty_merged, df_coa, df_movements
 
-    # 4. Final Merge dan Sorting
     df_journal_merged = df_lines.merge(df_journal_entries_final, left_on='journal_id', right_on='id', suffixes=('_line', '_entry'))
     df_journal_merged = df_journal_merged.merge(df_coa, on='account_code')
     
@@ -97,7 +119,6 @@ def get_base_data_and_filter(start_date, end_date):
         ascending=[True, True, False]
     ), df_coa, df_movements
 
-# --- LOGIC FUNCTIONS (Semua fungsi ini harus global) ---
 
 def calculate_trial_balance(df_journal, df_coa):
     """Menghitung Neraca Saldo (TB) dari data jurnal yang digabungkan."""
@@ -310,7 +331,7 @@ def to_excel_bytes(reports):
 
 
 def generate_reports():
-    """Menggabungkan logika laporan dan Worksheet."""
+    """Definisi Fungsi Utama untuk menghasilkan laporan. HARUS ADA DI TINGKAT GLOBAL."""
     
     # Tanggal Filter
     today = date.today()
@@ -334,9 +355,10 @@ def generate_reports():
     df_ws = df_ws.merge(df_tb_before_adj[['Kode Akun', 'Debit', 'Kredit', 'Tipe_Num']], on='Kode Akun', how='left').fillna(0)
     df_ws.columns = ['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Saldo Normal', 'TB Debit', 'TB Kredit', 'Tipe_Num']
     
-    # LOGIKA JURNAL PENYESUAIAN (MJ DEBIT/KREDIT) - ASUMSI 0 UNTUK SAAT INI
-    df_ws['MJ Debit'] = 0.0
-    df_ws['MJ Kredit'] = 0.0
+    # LOGIKA JURNAL PENYESUAIAN (MJ DEBIT/KREDIT) - Menggunakan data virtual MJ
+    df_mj_map = df_adjustments.set_index('Kode Akun')
+    df_ws['MJ Debit'] = df_ws['Kode Akun'].apply(lambda x: df_mj_map.get(x, {'Debit': 0.0}).get('Debit', 0.0))
+    df_ws['MJ Kredit'] = df_ws['Kode Akun'].apply(lambda x: df_mj_map.get(x, {'Kredit': 0.0}).get('Kredit', 0.0))
 
     # TB AFTER ADJUSTMENT (TB ADJ)
     df_ws['TB ADJ Debit'] = df_ws['TB Debit'] + df_ws['MJ Debit']
@@ -360,85 +382,3 @@ def generate_reports():
         "Jurnal Umum": df_general_journal,
         "Kartu Persediaan": df_inventory_card,
     }
-
-
-def to_excel_bytes(reports):
-    """Menyimpan semua laporan ke dalam satu file Excel (BytesIO)"""
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        for sheet_name, df in reports.items():
-            if isinstance(df, pd.DataFrame):
-                clean_name = sheet_name.replace(" ", "_").replace("(", "").replace(")", "")[:30]
-                df.to_excel(writer, sheet_name=clean_name, index=False)
-            
-    processed_data = output.getvalue()
-    return processed_data
-
-
-def show_reports_page():
-    st.title("📊 Laporan Keuangan & Akuntansi Lengkap")
-    
-    st.sidebar.header("Filter Tanggal Laporan")
-    
-    reports = generate_reports()
-    net_income = reports.get("Laba Bersih", 0)
-    
-    # Fungsi format Rupiah untuk tampilan
-    def format_rupiah(amount):
-        if pd.isna(amount) or amount == '':
-            return ''
-        if amount < 0:
-            return f"(Rp {-amount:,.0f})".replace(",", "_").replace(".", ",").replace("_", ".")
-        return f"Rp {amount:,.0f}".replace(",", "_").replace(".", ",").replace("_", ".")
-
-    def display_formatted_df(df, columns_to_format=['Debit', 'Kredit', 'TB Debit', 'TB Kredit', 'TB ADJ Debit', 'TB ADJ Kredit', 'TB CLOSING Debit', 'TB CLOSING Kredit', 'Jumlah', 'Total', 'Jumlah 1', 'Jumlah 2']):
-        df_display = df.copy()
-        for col in columns_to_format:
-            if col in df_display.columns:
-                df_display[col] = df_display[col].apply(format_rupiah)
-        return df_display
-
-    st.markdown("---")
-    
-    # Tampilkan Ringkasan Laba Bersih
-    if net_income >= 0:
-        st.success(f"**Laba Bersih (Net Income): {format_rupiah(net_income)}**")
-    else:
-        st.error(f"**Rugi Bersih (Net Loss): {format_rupiah(net_income)}**")
-    st.markdown("---")
-    
-    # Tampilkan Worksheet
-    st.header("1. Kertas Kerja (Worksheet)")
-    st.info("Worksheet menampilkan Neraca Saldo Setelah Penyesuaian (TB ADJ).")
-    st.dataframe(display_formatted_df(reports["Worksheet (Kertas Kerja)"]), use_container_width=True)
-    
-    # Tampilkan Laporan Keuangan Utama
-    st.header("2. Laporan Laba Rugi (Income Statement)")
-    st.dataframe(display_formatted_df(reports["Laporan Laba Rugi"], columns_to_format=['Jumlah', 'Total']), use_container_width=True)
-    
-    st.header("3. Laporan Perubahan Modal (Retained Earnings)")
-    st.dataframe(display_formatted_df(reports["Laporan Perubahan Modal"], columns_to_format=['Jumlah']), use_container_width=True)
-    
-    st.header("4. Laporan Posisi Keuangan (Balance Sheet)")
-    st.dataframe(display_formatted_df(reports["Laporan Posisi Keuangan"], columns_to_format=['Jumlah 1', 'Jumlah 2']), use_container_width=True)
-    
-    st.header("5. Neraca Saldo Setelah Penutup (TB CLOSING)")
-    st.dataframe(display_formatted_df(reports["Neraca Saldo Setelah Penutup"], columns_to_format=['TB CLOSING Debit', 'TB CLOSING Kredit']), use_container_width=True)
-
-    st.markdown("---")
-
-    # Tombol Download
-    st.subheader("Unduh Semua Laporan")
-    
-    excel_data = to_excel_bytes(reports)
-
-    st.download_button(
-        label="📥 Unduh Semua Laporan sebagai Excel",
-        data=excel_data,
-        file_name=f'Laporan_Akuntansi_Siklus_Lengkap_{date.today().strftime("%Y%m%d")}.xlsx',
-        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    )
-
-
-if __name__ == "__main__":
-    show_reports_page()
