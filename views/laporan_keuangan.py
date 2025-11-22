@@ -5,6 +5,19 @@ from io import BytesIO
 from datetime import date, timedelta
 import numpy as np
 
+# --- RUPIAH FORMAT UTILITY ---
+def format_rupiah(amount):
+    """Mengubah angka menjadi string format Rp. X.XXX.XXX"""
+    # Menangani NaN atau nilai kosong
+    if pd.isna(amount) or amount == '':
+        return ''
+    # Menghilangkan tanda kurung jika angka negatif (untuk standar akuntansi)
+    if amount < 0:
+        return f"(Rp {-amount:,.0f})".replace(",", "_").replace(".", ",").replace("_", ".")
+    # Menggunakan f-string untuk format mata uang Indonesia
+    return f"Rp {amount:,.0f}".replace(",", "_").replace(".", ",").replace("_", ".")
+
+
 # --- UTILITY FUNCTIONS ---
 
 @st.cache_data
@@ -19,7 +32,7 @@ def fetch_all_accounting_data():
         
         df_entries = pd.DataFrame(journal_entries_response.data)
         
-        # Konversi Tanggal di Sumber (di dalam cache)
+        # Konversi Tanggal di Sumber (di dalam cache) dan hapus zona waktu
         df_entries['transaction_date'] = pd.to_datetime(df_entries['transaction_date'], errors='coerce')
         if df_entries['transaction_date'].dt.tz is not None:
              df_entries['transaction_date'] = df_entries['transaction_date'].dt.tz_localize(None)
@@ -149,11 +162,7 @@ def calculate_closing_and_tb_after_closing(df_tb_adj):
     df_tb_closing.loc[df_tb_closing['Kode Akun'] == AKUN_MODAL, 'TB ADJ Kredit'] = Modal_Baru
     df_tb_closing.loc[df_tb_closing['Kode Akun'] == AKUN_MODAL, 'TB ADJ Debit'] = 0.0
     
-    # FIX: Memperbaiki daftar kolom (11 elemen). Ini adalah langkah yang menyebabkan ValueError.
-    df_tb_closing.columns = [
-        'Kode Akun', 'Nama Akun', 'Tipe Akun', 'Saldo Normal', 'TB Debit', 
-        'TB Kredit', 'Tipe_Num', 'MJ Debit', 'MJ Kredit', 'TB CLOSING Debit', 'TB CLOSING Kredit'
-    ]
+    df_tb_closing.columns = ['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Saldo Normal', 'TB Debit', 'TB Kredit', 'Tipe_Num', 'MJ Debit', 'MJ Kredit', 'TB CLOSING Debit', 'TB CLOSING Kredit']
 
     # Laporan Keuangan Akhir
     df_laba_rugi = create_income_statement_df(df_tb_adj, Total_Revenue, Total_Expense, Net_Income)
@@ -165,6 +174,7 @@ def calculate_closing_and_tb_after_closing(df_tb_adj):
 
 
     return df_tb_closing, Net_Income, df_laba_rugi, df_re, df_laporan_posisi_keuangan
+
 
 def create_income_statement_df(df_tb_adj, Total_Revenue, Total_Expense, Net_Income):
     """Membuat DataFrame yang rapi untuk Laporan Laba Rugi."""
@@ -284,59 +294,6 @@ def create_balance_sheet_df(df_tb_adj, Modal_Akhir):
     return pd.DataFrame(data, columns=['Deskripsi', 'Jumlah 1', 'Jumlah 2'])
 
 
-def generate_reports():
-    """Menggabungkan logika laporan dan Worksheet."""
-    
-    # Tanggal Filter
-    today = date.today()
-    if "end_date" not in st.session_state:
-        st.session_state.end_date = today
-    if "start_date" not in st.session_state:
-        st.session_state.start_date = today.replace(day=1)
-    
-    start_date = st.sidebar.date_input("Tanggal Mulai", value=st.session_state.start_date)
-    end_date = st.sidebar.date_input("Tanggal Akhir", value=st.session_state.end_date)
-    
-    df_journal_merged, df_coa, df_movements = get_base_data_and_filter(start_date, end_date)
-    
-    # --- 1. NERACA SALDO SEBELUM PENYESUAIAN (TB BEFORE ADJ) ---
-    df_tb_before_adj = calculate_trial_balance(df_journal_merged, df_coa)
-
-    # --- 2. WORKSHEET (NS ADJ) ---
-    df_ws = df_coa[['account_code', 'account_name', 'account_type', 'normal_balance']].copy()
-    df_ws.columns = ['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Saldo Normal']
-    
-    df_ws = df_ws.merge(df_tb_before_adj[['Kode Akun', 'Debit', 'Kredit', 'Tipe_Num']], on='Kode Akun', how='left').fillna(0)
-    df_ws.columns = ['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Saldo Normal', 'TB Debit', 'TB Kredit', 'Tipe_Num']
-    
-    # LOGIKA JURNAL PENYESUAIAN (MJ DEBIT/KREDIT) - ASUMSI 0 UNTUK SAAT INI
-    df_ws['MJ Debit'] = 0.0
-    df_ws['MJ Kredit'] = 0.0
-
-    # TB AFTER ADJUSTMENT (TB ADJ)
-    df_ws['TB ADJ Debit'] = df_ws['TB Debit'] + df_ws['MJ Debit']
-    df_ws['TB ADJ Kredit'] = df_ws['TB Kredit'] + df_ws['MJ Kredit']
-
-    # --- 3. SIKLUS PENUTUPAN & LAPORAN KEUANGAN UTAMA (DARI TB ADJ) ---
-    df_tb_closing, net_income, df_laba_rugi, df_re, df_laporan_posisi_keuangan = calculate_closing_and_tb_after_closing(df_ws)
-    
-    # --- Tambahkan laporan pendukung (Jurnal Umum & Kartu Persediaan) ---
-    df_general_journal = pd.DataFrame() # Placeholder
-    df_inventory_card = pd.DataFrame() # Placeholder
-
-    return {
-        "Laba Bersih": net_income,
-        "Neraca Saldo Sebelum Penyesuaian": df_tb_before_adj,
-        "Worksheet (Kertas Kerja)": df_ws,
-        "Laporan Laba Rugi": df_laba_rugi,
-        "Laporan Perubahan Modal": df_re,
-        "Laporan Posisi Keuangan": df_laporan_posisi_keuangan,
-        "Neraca Saldo Setelah Penutup": df_tb_closing[['Kode Akun', 'Nama Akun', 'TB CLOSING Debit', 'TB CLOSING Kredit']],
-        "Jurnal Umum": df_general_journal,
-        "Kartu Persediaan": df_inventory_card,
-    }
-
-
 def to_excel_bytes(reports):
     """Menyimpan semua laporan ke dalam satu file Excel (BytesIO)"""
     output = BytesIO()
@@ -358,32 +315,47 @@ def show_reports_page():
     reports = generate_reports()
     net_income = reports.get("Laba Bersih", 0)
     
+    # Fungsi format Rupiah untuk tampilan
+    def format_rupiah(amount):
+        if pd.isna(amount) or amount == '':
+            return ''
+        if amount < 0:
+            return f"(Rp {-amount:,.0f})".replace(",", "_").replace(".", ",").replace("_", ".")
+        return f"Rp {amount:,.0f}".replace(",", "_").replace(".", ",").replace("_", ".")
+
+    def display_formatted_df(df, columns_to_format=['Debit', 'Kredit', 'TB Debit', 'TB Kredit', 'TB ADJ Debit', 'TB ADJ Kredit', 'TB CLOSING Debit', 'TB CLOSING Kredit', 'Jumlah', 'Total', 'Jumlah 1', 'Jumlah 2']):
+        df_display = df.copy()
+        for col in columns_to_format:
+            if col in df_display.columns:
+                df_display[col] = df_display[col].apply(format_rupiah)
+        return df_display
+
     st.markdown("---")
     
     # Tampilkan Ringkasan Laba Bersih
     if net_income >= 0:
-        st.success(f"**Laba Bersih (Net Income): Rp {net_income:,.0f}**")
+        st.success(f"**Laba Bersih (Net Income): {format_rupiah(net_income)}**")
     else:
-        st.error(f"**Rugi Bersih (Net Loss): Rp {net_income:,.0f}**")
+        st.error(f"**Rugi Bersih (Net Loss): {format_rupiah(net_income)}**")
     st.markdown("---")
     
     # Tampilkan Worksheet
     st.header("1. Kertas Kerja (Worksheet)")
     st.info("Worksheet menampilkan Neraca Saldo Setelah Penyesuaian (TB ADJ).")
-    st.dataframe(reports["Worksheet (Kertas Kerja)"], use_container_width=True)
+    st.dataframe(display_formatted_df(reports["Worksheet (Kertas Kerja)"]), use_container_width=True)
     
     # Tampilkan Laporan Keuangan Utama
     st.header("2. Laporan Laba Rugi (Income Statement)")
-    st.dataframe(reports["Laporan Laba Rugi"], use_container_width=True)
+    st.dataframe(display_formatted_df(reports["Laporan Laba Rugi"], columns_to_format=['Jumlah', 'Total']), use_container_width=True)
     
     st.header("3. Laporan Perubahan Modal (Retained Earnings)")
-    st.dataframe(reports["Laporan Perubahan Modal"], use_container_width=True)
+    st.dataframe(display_formatted_df(reports["Laporan Perubahan Modal"], columns_to_format=['Jumlah']), use_container_width=True)
     
     st.header("4. Laporan Posisi Keuangan (Balance Sheet)")
-    st.dataframe(reports["Laporan Posisi Keuangan"], use_container_width=True)
+    st.dataframe(display_formatted_df(reports["Laporan Posisi Keuangan"], columns_to_format=['Jumlah 1', 'Jumlah 2']), use_container_width=True)
     
     st.header("5. Neraca Saldo Setelah Penutup (TB CLOSING)")
-    st.dataframe(reports["Neraca Saldo Setelah Penutup"], use_container_width=True)
+    st.dataframe(display_formatted_df(reports["Neraca Saldo Setelah Penutup"], columns_to_format=['TB CLOSING Debit', 'TB CLOSING Kredit']), use_container_width=True)
 
     st.markdown("---")
 
