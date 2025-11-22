@@ -3,17 +3,22 @@ from supabase_client import supabase
 from midtrans_client import create_transaction
 import os
 
-# mendapatkan data produk
+# mendapatkan data produk (memastikan semua kolom diambil)
 def get_products():
-    return supabase.table("products").select("*").execute().data
+    # Mengambil semua kolom, termasuk kolom akuntansi yang baru ditambahkan
+    return supabase.table("products").select("*, cost_price, inventory_account_code, hpp_account_code").execute().data
 
 # membuat order
-def create_order(total_amount, address, midtrans_id): # <-- Tambahkan midtrans_id di parameter
+def create_order(total_amount, address):
+    # Dapatkan user_id dari session state jika ada (untuk melengkapi tabel orders)
+    user_email = st.session_state.get('user_email')
+    
+    # Keterangan: midtrans_order_id diisi NULL di sini, akan diisi oleh webhook
     return supabase.table("orders").insert({
         "total_amount": total_amount,
         "address": address,
-        "midtrans_order_id": midtrans_id, # <-- Simpan ID Midtrans
-        "status": "pending" # Pastikan status default-nya pending
+        "status": "pending",
+        # Anda dapat menambahkan kolom user_email jika ada di tabel orders
     }).execute().data[0]
 
 # Menambahkan item pesanan
@@ -27,28 +32,29 @@ def add_order_item(order_id, product_id, quantity, sub_total):
 
 # Tampilkan produk kopi
 def show_products():
-    # Ambil daftar produk dari database Supabase
     products = get_products()
     st.title(" Pemesanan ")
 
-    # Inisialisasi keranjang jika belum ada
     if "cart" not in st.session_state:
         st.session_state.cart = {}
 
     for p in products:
-        st.image(p["image_url"], width=150)
+        # Perbaikan Error Gambar (Image URL check)
+        if p.get("image_url"):
+            st.image(p["image_url"], width=150)
+        else:
+            st.warning(f"Gambar untuk {p['name']} tidak ditemukan.")
+
         st.write(f"**{p['name']}**")
         st.write(p["description"])
         st.write(f"Rp {p['price']:,}")
-        qty = st.number_input(f"Jumlah ({p['name']})", min_value=0, max_value=100, key=f"qty_{p['id']}")
+        qty = st.number_input(f"Jumlah ({p['name']})", min_value=0, max_value=10, key=f"qty_{p['id']}")
 
         if st.button(f"Tambah ke Keranjang", key=f"add_{p['id']}"):
             if qty > 0:
-                # Jika produk sudah ada, tambahkan jumlahnya
                 if p["id"] in st.session_state.cart:
                     st.session_state.cart[p["id"]]["qty"] += qty
                 else:
-                    # Jika produk baru, tambahkan ke keranjang
                     st.session_state.cart[p["id"]] = {"product": p, "qty": qty}
                 st.success(f"{qty} {p['name']} ditambahkan ke keranjang")
 
@@ -68,7 +74,6 @@ def show_cart_and_payment():
 
     st.write(f"**Total: Rp {total:,}**")
 
-    # Form alamat pada halaman yang sama
     st.write("### Alamat Pengiriman")
     address = st.text_area("Masukkan alamat lengkap Anda", placeholder="Jl. Kopi No. 1, Jakarta")
 
@@ -77,14 +82,14 @@ def show_cart_and_payment():
             st.error("Alamat tidak boleh kosong!")
             return
 
-        # Buat order dengan alamat
+        # 1. Buat order awal di Supabase untuk mendapatkan Order ID
         order = create_order(total, address)
 
-        # Simpan semua item pesanan ke database
+        # 2. Simpan semua item pesanan ke database
         for item in cart.values():
             add_order_item(order["id"], item["product"]["id"], item["qty"], item["product"]["price"] * item["qty"])
 
-        # Buat transaksi Midtrans
+        # 3. Buat transaksi Midtrans menggunakan Supabase Order ID
         snap_token = create_transaction(order["id"], total)
         st.write("Klik tombol untuk membayar:")
         st.components.v1.html(f"""
@@ -105,5 +110,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
