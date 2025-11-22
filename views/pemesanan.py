@@ -48,7 +48,7 @@ def show_products():
         st.write(f"**{p['name']}**")
         st.write(p["description"])
         st.write(f"Rp {p['price']:,}")
-        qty = st.number_input(f"Jumlah ({p['name']})", min_value=0, max_value=10, key=f"qty_{p['id']}")
+        qty = st.number_input(f"Jumlah ({p['name']})", min_value=0, max_value=500, key=f"qty_{p['id']}")
 
         if st.button(f"Tambah ke Keranjang", key=f"add_{p['id']}"):
             if qty > 0:
