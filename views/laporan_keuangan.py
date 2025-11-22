@@ -64,27 +64,31 @@ def get_base_data_and_filter(start_date, end_date):
         empty_merged = pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount'])
         return empty_merged, df_coa, df_movements
         
-    # Memaksa konversi tipe data TEPAT SEBELUM FILTER (Fix TypeError)
+    # Memaksa konversi tipe data DATETIME
     df_entries['transaction_date'] = df_entries['transaction_date'].astype('datetime64[ns]')
     
     # Konversi filter date input ke tipe datetime
     filter_start = pd.to_datetime(start_date)
     filter_end = pd.to_datetime(end_date)
     
-    # 1. Filter entri jurnal berdasarkan rentang tanggal
-    df_filtered_entries = df_entries.loc[
-        (df_entries['transaction_date'] >= filter_start) & 
-        (df_entries['transaction_date'] <= filter_end)
+    # 1. Pisahkan Jurnal Saldo Awal (ID 5) dari transaksi lainnya
+    df_saldo_awal = df_entries.loc[df_entries['id'] == 5].copy()
+    df_transaksi_lain = df_entries.loc[df_entries['id'] != 5].copy()
+
+    # 2. Filter transaksi baru berdasarkan rentang tanggal
+    df_filtered_entries = df_transaksi_lain.loc[
+        (df_transaksi_lain['transaction_date'] >= filter_start) & 
+        (df_transaksi_lain['transaction_date'] <= filter_end)
     ].copy()
 
-    df_saldo_awal = df_entries.loc[df_entries['id'] == 5].copy()
-
+    # 3. Gabungkan: Saldo Awal + Transaksi Baru
     df_journal_entries_final = pd.concat([df_filtered_entries, df_saldo_awal]).drop_duplicates(subset=['id'], keep='first')
         
     if df_journal_entries_final.empty:
         empty_merged = pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount'])
         return empty_merged, df_coa, df_movements
 
+    # 4. Final Merge dan Sorting
     df_journal_merged = df_lines.merge(df_journal_entries_final, left_on='journal_id', right_on='id', suffixes=('_line', '_entry'))
     df_journal_merged = df_journal_merged.merge(df_coa, on='account_code')
     
@@ -92,7 +96,6 @@ def get_base_data_and_filter(start_date, end_date):
         by=['transaction_date', 'journal_id', 'debit_amount'], 
         ascending=[True, True, False]
     ), df_coa, df_movements
-
 
 # --- LOGIC FUNCTIONS (Semua fungsi ini harus global) ---
 
