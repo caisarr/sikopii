@@ -50,8 +50,9 @@ def get_base_data_and_filter(start_date, end_date):
         empty_merged = pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount'])
         return empty_merged, df_coa, df_movements
         
-    # --- PERBAIKAN FINAL (Mengatasi TypeError): Memaksa konversi tipe data DATETIME ---
-    df_entries['transaction_date'] = pd.to_datetime(df_entries['transaction_date'], errors='coerce').dt.normalize()
+    # --- PERBAIKAN FOKUS: Memaksa Konversi Tipe Data Tepat Sebelum Filter ---
+    # Ini mengatasi TypeError yang disebabkan oleh cache Pandas yang tidak stabil.
+    df_entries['transaction_date'] = df_entries['transaction_date'].astype('datetime64[ns]')
     
     # 1. Filter entri jurnal berdasarkan rentang tanggal
     df_filtered_entries = df_entries.loc[
@@ -273,51 +274,6 @@ def create_balance_sheet_df(df_tb_adj, Modal_Akhir):
     return pd.DataFrame(data, columns=['Deskripsi', 'Jumlah 1', 'Jumlah 2'])
 
 
-def calculate_closing_and_tb_after_closing(df_tb_adj):
-    """
-    Menghitung Jurnal Penutup (Closing Journal) dan Neraca Saldo Setelah Penutup.
-    """
-    
-    AKUN_MODAL = '3-1100'
-    AKUN_PRIVE = '3-1200'
-    AKUN_IKHTISAR_LR = '3-1300'
-    
-    # 1. HITUNG LABA BERSIH DARI TB ADJ
-    
-    Total_Revenue = df_tb_adj[df_tb_adj['Tipe_Num'].isin([4, 8])]['Kredit'].sum()
-    Total_Expense = df_tb_adj[df_tb_adj['Tipe_Num'].isin([5, 6, 9])]['Debit'].sum()
-    Prive_Value = df_tb_adj[df_tb_adj['Kode Akun'] == AKUN_PRIVE]['Debit'].sum()
-    Modal_Awal_Baris = df_tb_adj[df_tb_adj['Kode Akun'] == AKUN_MODAL]['Kredit'].sum()
-    
-    Net_Income = Total_Revenue - Total_Expense
-    
-    # 2. GENERATE NERACA SALDO SETELAH PENUTUP (TB CLOSING)
-    df_tb_closing = df_tb_adj.copy()
-    
-    # Tutup Akun Temporer (Set Debit/Kredit = 0)
-    df_tb_closing.loc[df_tb_closing['Tipe_Num'].isin([4, 5, 6, 8, 9]) | (df_tb_closing['Kode Akun'].isin([AKUN_PRIVE, AKUN_IKHTISAR_LR])), 
-                        ['TB ADJ Debit', 'TB ADJ Kredit']] = 0.0
-
-    # Sesuaikan Saldo Modal Akhir
-    Modal_Baru = Modal_Awal_Baris + Net_Income - Prive_Value
-    
-    df_tb_closing.loc[df_tb_closing['Kode Akun'] == AKUN_MODAL, 'TB ADJ Kredit'] = Modal_Baru
-    df_tb_closing.loc[df_tb_closing['Kode Akun'] == AKUN_MODAL, 'TB ADJ Debit'] = 0.0
-    
-    df_tb_closing.columns = ['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Debit', 'Kredit', 'MJ Debit', 'MJ Kredit', 'TB CLOSING Debit', 'TB CLOSING Kredit', 'Tipe_Num']
-
-    # Laporan Keuangan Akhir
-    df_laba_rugi = create_income_statement_df(df_tb_adj, Total_Revenue, Total_Expense, Net_Income)
-    df_re = pd.DataFrame({
-        'Deskripsi': ['Modal Awal', 'Laba Bersih Periode', 'Prive', 'Modal Akhir'],
-        'Jumlah': [Modal_Awal_Baris, Net_Income, -Prive_Value, Modal_Baru]
-    })
-    df_laporan_posisi_keuangan = create_balance_sheet_df(df_tb_adj, Modal_Baru)
-
-
-    return df_tb_closing, Net_Income, df_laba_rugi, df_re, df_laporan_posisi_keuangan
-
-
 def generate_reports():
     """Menggabungkan logika laporan dan Worksheet."""
     
@@ -355,7 +311,6 @@ def generate_reports():
     df_tb_closing, net_income, df_laba_rugi, df_re, df_laporan_posisi_keuangan = calculate_closing_and_tb_after_closing(df_ws)
     
     # --- Tambahkan laporan pendukung (Jurnal Umum & Kartu Persediaan) ---
-    # Jurnal Umum: Panggil fungsi ini jika Anda ingin menampilkannya
     df_general_journal = pd.DataFrame() # Placeholder
     df_inventory_card = pd.DataFrame() # Placeholder
 
