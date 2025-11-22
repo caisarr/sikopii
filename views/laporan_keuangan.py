@@ -139,6 +139,7 @@ def calculate_closing_and_tb_after_closing(df_tb_adj):
     
     # 1. HITUNG LABA BERSIH DARI TB ADJ
     
+    # FIX: Menggunakan kolom TB ADJ KREDIT/DEBIT
     Total_Revenue = df_tb_adj[df_tb_adj['Tipe_Num'].isin([4, 8])]['TB ADJ Kredit'].sum()
     Total_Expense = df_tb_adj[df_tb_adj['Tipe_Num'].isin([5, 6, 9])]['TB ADJ Debit'].sum()
     Prive_Value = df_tb_adj[df_tb_adj['Kode Akun'] == AKUN_PRIVE]['TB ADJ Debit'].sum()
