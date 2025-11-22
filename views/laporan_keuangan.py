@@ -5,11 +5,11 @@ from io import BytesIO
 from datetime import date, timedelta
 import numpy as np
 
-# --- UTILITY FUNCTIONS (Data Fetching dan TB Calculation) ---
+# --- UTILITY FUNCTIONS ---
 
 @st.cache_data
 def fetch_all_accounting_data():
-    """Mengambil semua data yang diperlukan dari Supabase."""
+    """Mengambil semua data yang diperlukan dari Supabase dan mengonversi tipe data."""
     
     try:
         journal_lines_response = supabase.table("journal_lines").select("*").execute()
@@ -17,9 +17,14 @@ def fetch_all_accounting_data():
         coa_response = supabase.table("chart_of_accounts").select("*").execute()
         inventory_response = supabase.table("inventory_movements").select("*, products(name)").execute()
         
+        # --- PERBAIKAN: Konversi Tanggal di Sumber ---
+        df_entries = pd.DataFrame(journal_entries_response.data)
+        # Pastikan kolom transaction_date selalu bertipe datetime64[ns]
+        df_entries['transaction_date'] = pd.to_datetime(df_entries['transaction_date'], errors='coerce').dt.normalize()
+        
         return {
             "journal_lines": pd.DataFrame(journal_lines_response.data).fillna(0),
-            "journal_entries": pd.DataFrame(journal_entries_response.data),
+            "journal_entries": df_entries, # Gunakan DataFrame yang sudah dikonversi
             "coa": pd.DataFrame(coa_response.data),
             "inventory_movements": pd.DataFrame(inventory_response.data),
         }
@@ -41,15 +46,14 @@ def get_base_data_and_filter(start_date, end_date):
     df_coa = data["coa"]
     df_movements = data["inventory_movements"]
     
+    # Cek data utama
     if df_entries.empty or df_lines.empty:
         empty_merged = pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount'])
         return empty_merged, df_coa, df_movements
         
-    try:
-        df_entries['transaction_date'] = pd.to_datetime(df_entries['transaction_date'], errors='coerce').dt.normalize()
-    except KeyError:
-        return pd.DataFrame(), df_coa, df_movements
-    
+    # --- PERBAIKAN: Hapus Konversi Tanggal di Sini ---
+    # Sekarang, kita hanya perlu membandingkan karena df_entries sudah bertipe datetime
+
     df_filtered_entries = df_entries[
         (df_entries['transaction_date'] >= pd.to_datetime(start_date)) & 
         (df_entries['transaction_date'] <= pd.to_datetime(end_date))
@@ -87,8 +91,6 @@ def calculate_trial_balance(df_journal, df_coa):
         
         df_tb = df_tb.merge(df_coa, on='account_code', how='right').fillna(0)
         
-        # Tambahkan kolom numerik Tipe Akun untuk filtering yang lebih mudah
-        # Asumsi kode akun selalu diawali dengan angka (misal: 1-1100 -> 1)
         df_tb['Tipe_Num'] = df_tb['account_code'].astype(str).str[0].astype(int) 
 
         df_tb['Saldo Bersih'] = df_tb['Total_Debit'] - df_tb['Total_Kredit']
@@ -108,15 +110,12 @@ def calculate_trial_balance(df_journal, df_coa):
     return df_tb
 
 
-# --- FUNGSI LENGKAP UNTUK MENGHASILKAN LAPORAN KEUANGAN ---
-
 def create_income_statement_df(df_tb_adj, Total_Revenue, Total_Expense, Net_Income):
     """Membuat DataFrame yang rapi untuk Laporan Laba Rugi."""
     data = []
     
     df_is = df_tb_adj[df_tb_adj['Tipe_Num'].isin([4, 5, 6, 8, 9])].copy()
     
-    # Kelompokkan akun-akun untuk ditampilkan
     def get_saldo_and_sum(df, tipe_nums, saldo_col='Debit'):
         df_filtered = df[df['Tipe_Num'].isin(tipe_nums)]
         total = df_filtered[saldo_col].sum()
@@ -125,6 +124,7 @@ def create_income_statement_df(df_tb_adj, Total_Revenue, Total_Expense, Net_Inco
     # PENDAPATAN (Akun 4, 8)
     Total_4, df_4 = get_saldo_and_sum(df_is, [4], 'Kredit')
     Total_8, df_8 = get_saldo_and_sum(df_is, [8], 'Kredit')
+    Total_Revenue = Total_4 + Total_8
 
     data.append(['PENDAPATAN', '', ''])
     for index, row in df_4.iterrows():
@@ -158,10 +158,10 @@ def create_income_statement_df(df_tb_adj, Total_Revenue, Total_Expense, Net_Inco
     for index, row in df_9.iterrows():
         data.append([row['Nama Akun'], row['Debit'], ''])
     data.append(['TOTAL BEBAN LAIN-LAIN', '', Total_9])
-
-    data.append(['LABA BERSIH SEBELUM PAJAK', '', Laba_Kotor - Total_6 + Total_8 - Total_9])
     
-    data.append(['LABA BERSIH', '', Net_Income])
+    Laba_Bersih_Hitung = Laba_Operasi + Total_8 - Total_9
+
+    data.append(['LABA BERSIH', '', Laba_Bersih_Hitung])
 
     return pd.DataFrame(data, columns=['Deskripsi', 'Jumlah', 'Total'])
 
@@ -187,7 +187,6 @@ def create_balance_sheet_df(df_tb_adj, Modal_Akhir):
     data.append(['Aset Tetap', '', ''])
     df_fixed_asset = df_bs[df_bs['Kode Akun'].astype(str).str.startswith('1-2')].copy()
     for index, row in df_fixed_asset.iterrows():
-        # Aset tetap dan Kontra Aset
         data.append([row['Nama Akun'], row['Debit'] - row['Kredit'], ''])
     Total_Aset_Tetap = df_fixed_asset['Debit'].sum() - df_fixed_asset['Kredit'].sum()
     data.append(['TOTAL ASET TETAP', '', Total_Aset_Tetap])
@@ -203,7 +202,6 @@ def create_balance_sheet_df(df_tb_adj, Modal_Akhir):
     data.append(['Liabilitas Lancar', '', ''])
     df_current_liab = df_bs[df_bs['Kode Akun'].astype(str).str.startswith('2-1')].copy()
     for index, row in df_current_liab.iterrows():
-        # Liabilitas ditampilkan sebagai Kredit (positif)
         data.append([row['Nama Akun'], row['Kredit'] - row['Debit'], ''])
     Total_Liabilitas_Lancar = df_current_liab['Kredit'].sum() - df_current_liab['Debit'].sum()
     data.append(['TOTAL LIABILITAS LANCAR', '', Total_Liabilitas_Lancar])
@@ -232,7 +230,6 @@ def create_balance_sheet_df(df_tb_adj, Modal_Akhir):
 def calculate_closing_and_tb_after_closing(df_tb_adj):
     """
     Menghitung Jurnal Penutup (Closing Journal) dan Neraca Saldo Setelah Penutup.
-    Ini adalah proses virtual (non-database).
     """
     
     AKUN_MODAL = '3-1100'
@@ -248,11 +245,7 @@ def calculate_closing_and_tb_after_closing(df_tb_adj):
     
     Net_Income = Total_Revenue - Total_Expense
     
-    # 2. GENERATE JURNAL PENUTUP (VIRTUAL)
-    # ... (Logika Penutupan sama seperti sebelumnya, dihilangkan demi dry-run)
-    df_closing_journal = pd.DataFrame() # Placeholder
-    
-    # 3. GENERATE NERACA SALDO SETELAH PENUTUP (TB CLOSING)
+    # 2. GENERATE NERACA SALDO SETELAH PENUTUP (TB CLOSING)
     df_tb_closing = df_tb_adj.copy()
     
     # Tutup Akun Temporer (Set Debit/Kredit = 0)
@@ -301,8 +294,8 @@ def generate_reports():
     df_ws = df_coa[['account_code', 'account_name', 'account_type', 'normal_balance']].copy()
     df_ws.columns = ['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Saldo Normal']
     
-    df_ws = df_ws.merge(df_tb_before_adj[['Kode Akun', 'Debit', 'Kredit']], on='Kode Akun', how='left').fillna(0)
-    df_ws.columns = ['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Saldo Normal', 'TB Debit', 'TB Kredit']
+    df_ws = df_ws.merge(df_tb_before_adj[['Kode Akun', 'Debit', 'Kredit', 'Tipe_Num']], on='Kode Akun', how='left').fillna(0)
+    df_ws.columns = ['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Saldo Normal', 'TB Debit', 'TB Kredit', 'Tipe_Num']
     
     # LOGIKA JURNAL PENYESUAIAN (MJ DEBIT/KREDIT) - ASUMSI 0 UNTUK SAAT INI
     df_ws['MJ Debit'] = 0.0
@@ -316,9 +309,10 @@ def generate_reports():
     df_tb_closing, net_income, df_laba_rugi, df_re, df_laporan_posisi_keuangan = calculate_closing_and_tb_after_closing(df_ws)
     
     # --- Tambahkan laporan pendukung (Jurnal Umum & Kartu Persediaan) ---
-    df_general_journal = pd.DataFrame() # Placeholder
-    df_inventory_card = pd.DataFrame() # Placeholder
-    
+    # Jurnal Umum: Panggil fungsi ini jika Anda ingin menampilkannya
+    # df_general_journal = generate_general_journal(df_journal_merged) 
+    # df_inventory_card = generate_inventory_card(df_movements)
+
     return {
         "Laba Bersih": net_income,
         "Neraca Saldo Sebelum Penyesuaian": df_tb_before_adj,
@@ -327,8 +321,8 @@ def generate_reports():
         "Laporan Perubahan Modal": df_re,
         "Laporan Posisi Keuangan": df_laporan_posisi_keuangan,
         "Neraca Saldo Setelah Penutup": df_tb_closing[['Kode Akun', 'Nama Akun', 'TB CLOSING Debit', 'TB CLOSING Kredit']],
-        "Jurnal Umum": df_general_journal,
-        "Kartu Persediaan": df_inventory_card,
+        # "Jurnal Umum": df_general_journal,
+        # "Kartu Persediaan": df_inventory_card,
     }
 
 
@@ -338,7 +332,6 @@ def to_excel_bytes(reports):
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         for sheet_name, df in reports.items():
             if isinstance(df, pd.DataFrame):
-                # Hindari sheet_name yang terlalu panjang
                 clean_name = sheet_name.replace(" ", "_").replace("(", "").replace(")", "")[:30]
                 df.to_excel(writer, sheet_name=clean_name, index=False)
             
