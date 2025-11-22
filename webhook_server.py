@@ -1,26 +1,36 @@
 import os
-import json
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException
-from supabase_client import supabase # Menggunakan klien yang sudah ada
+from supabase_client import supabase # Menggunakan klien Supabase yang sudah ada
 from dotenv import load_dotenv
+from datetime import date # Diperlukan untuk mencatat tanggal movement
 
 load_dotenv()
 
 app = FastAPI(title="Midtrans Webhook Listener & Accounting Processor")
 
+# --- Ambil Kunci Midtrans untuk Verifikasi ---
+# Penting: Gunakan Server Key untuk memverifikasi Webhook
+MIDTRANS_SERVER_KEY = os.getenv("MIDTRANS_SERVER_KEY")
+
+if not MIDTRANS_SERVER_KEY:
+    # Dalam lingkungan Railway, ini akan menyebabkan crash, yang kita ingin hindari 502
+    print("FATAL: MIDTRANS_SERVER_KEY tidak ditemukan di .env")
+    
 # ===============================================
-# FUNGSI AKUNTANSI (FASE 2)
+# FUNGSI AKUNTANSI & INVENTORY
 # ===============================================
 
 def record_sales_journal(order_id: int):
     """
-    Mencatat Jurnal Penjualan dan HPP berdasarkan order_id.
-    Ini adalah implementasi Double-Entry Bookkeeping.
+    Mencatat Jurnal Penjualan, HPP, dan Pergerakan Persediaan (ISSUE).
     """
     try:
         # 1. Ambil Detail Pesanan dan Barang (Order Items)
-        order_response = supabase.table("orders").select("*, order_items(*, products(cost_price))").eq("id", order_id).execute()
+        # Mengambil data akun dan cost_price dari tabel products
+        order_response = supabase.table("orders").select(
+            "*, order_items(*, products(id, cost_price, inventory_account_code, hpp_account_code))"
+        ).eq("id", order_id).execute()
         
         if not order_response.data:
             print(f"ERROR: Order ID {order_id} tidak ditemukan untuk Jurnal.")
@@ -28,57 +38,85 @@ def record_sales_journal(order_id: int):
 
         order = order_response.data[0]
         total_revenue = order["total_amount"]
-        total_cost = 0
-
-        # Hitung Total HPP dari semua item
-        for item in order["order_items"]:
-            # Perhitungan HPP: quantity * cost_price
-            cost_price = item["products"]["cost_price"] if item["products"] and item["products"]["cost_price"] else 0
-            total_cost += item["quantity"] * cost_price
-
-        # --- JURNAL 1: PENJUALAN (CASH vs REVENUE) ---
         
-        # 2. Buat Entri Jurnal Utama (Header)
+        # Akun Kompleks yang Digunakan (Sesuai COA Anda)
+        CASH_ACCOUNT = '1-1100'   # Kas
+        SALES_ACCOUNT = '4-1100'  # Penjualan
+        
+        lines = []
+        movements_to_insert = []
+
+        # --- 2. JURNAL 1: PENJUALAN (CASH vs REVENUE) ---
+        
+        # Buat Entri Jurnal Utama (Header)
         journal = supabase.table("journal_entries").insert({
             "order_id": order_id,
             "description": f"Jurnal Penjualan Tunai Order ID: {order_id}",
-            "user_id": order.get("user_id") # Ambil user_id dari tabel orders
+            "user_id": order.get("user_id") 
         }).execute().data[0]
         journal_id = journal["id"]
 
-        # 3. Catat Garis Jurnal (Lines)
-        lines = []
+        # Catat Garis Jurnal untuk Penjualan
         
-        # DEBIT: KAS (1100) - Penerimaan Uang
+        # DEBIT: KAS (1-1100) - Penerimaan Uang
         lines.append({
-            "journal_id": journal_id, "account_code": "1100", 
+            "journal_id": journal_id, "account_code": CASH_ACCOUNT, 
             "debit_amount": total_revenue, "credit_amount": 0
         })
         
-        # KREDIT: PENJUALAN KOPI (4000) - Pengakuan Pendapatan
+        # KREDIT: PENJUALAN (4-1100) - Pengakuan Pendapatan
         lines.append({
-            "journal_id": journal_id, "account_code": "4000", 
+            "journal_id": journal_id, "account_code": SALES_ACCOUNT, 
             "debit_amount": 0, "credit_amount": total_revenue
         })
-
-        # --- JURNAL 2: HPP (COST OF GOODS SOLD vs INVENTORY) ---
-        if total_cost > 0:
+        
+        # --- 3. JURNAL 2 & INVENTORY MOVEMENT: HPP & STOK KELUAR ---
+        
+        for item in order["order_items"]:
+            product_id = item["product_id"]
+            quantity_sold = item["quantity"]
             
-            # DEBIT: HPP (5000) - Pengakuan Beban
-            lines.append({
-                "journal_id": journal_id, "account_code": "5000", 
-                "debit_amount": total_cost, "credit_amount": 0
-            })
-            
-            # KREDIT: PERSEDIAAN (1300) - Pengurangan Aset
-            lines.append({
-                "journal_id": journal_id, "account_code": "1300", 
-                "debit_amount": 0, "credit_amount": total_cost
-            })
+            product_data = item.get("products", {})
+            cost_price = product_data.get("cost_price", 0)
+            inventory_acc = product_data.get("inventory_account_code", '1-1200')
+            hpp_acc = product_data.get("hpp_account_code", '5-1100')           
 
-        # 4. Simpan Semua Garis Jurnal ke Supabase
-        supabase.table("journal_lines").insert(lines).execute()
-        print(f"SUCCESS: Jurnal untuk Order {order_id} berhasil dicatat.")
+            if cost_price > 0 and quantity_sold > 0:
+                cost_of_sale = quantity_sold * cost_price
+
+                # Jurnal HPP:
+                # DEBIT: HPP (5-1100) - Pengakuan Beban
+                lines.append({
+                    "journal_id": journal_id, "account_code": hpp_acc, 
+                    "debit_amount": cost_of_sale, "credit_amount": 0
+                })
+                
+                # KREDIT: PERSEDIAAN (Akun Inventori Produk) - Pengurangan Aset
+                lines.append({
+                    "journal_id": journal_id, "account_code": inventory_acc, 
+                    "debit_amount": 0, "credit_amount": cost_of_sale
+                })
+
+                # CATAT INVENTORY MOVEMENT (UNIT KELUAR)
+                movements_to_insert.append({
+                    "product_id": product_id,
+                    "movement_date": str(date.today()), 
+                    "movement_type": "ISSUE", 
+                    "quantity_change": -quantity_sold, # Nilai negatif untuk pengurangan
+                    "unit_cost": cost_price,
+                    "reference_id": f"ORDER-{order_id}",
+                })
+
+        # 4. Simpan Semua Garis Jurnal
+        if lines:
+            supabase.table("journal_lines").insert(lines).execute()
+        
+        # 5. Simpan Semua Inventory Movements
+        if movements_to_insert:
+            supabase.table("inventory_movements").insert(movements_to_insert).execute()
+
+
+        print(f"SUCCESS: Jurnal dan Inventory Movement untuk Order {order_id} berhasil dicatat.")
         return True
 
     except Exception as e:
@@ -107,11 +145,11 @@ async def midtrans_notification(request: Request):
         new_status = ""
         journal_recorded = False
 
-        if transaction_status == "capture" or transaction_status == "settlement":
+        # Verifikasi dan tentukan status akhir
+        if transaction_status in ["capture", "settlement"]:
             new_status = "settle"
             
             # PENTING: Panggil fungsi pencatatan jurnal
-            # Perlu dipastikan order_id yang diterima dari Midtrans adalah tipe data int (dari Supabase order ID)
             journal_recorded = record_sales_journal(int(order_id)) 
             
         elif transaction_status == "pending":
@@ -119,27 +157,25 @@ async def midtrans_notification(request: Request):
         elif transaction_status in ["deny", "expire", "cancel"]:
             new_status = "failed"
         else:
-            # Status lain (refund, partial, dll.)
             new_status = transaction_status
             
-        # 1. UPDATE STATUS ORDER DI SUPABASE
+        # UPDATE STATUS ORDER DI SUPABASE
         update_response = supabase.table("orders").update({
             "status": new_status,
-            "midtrans_order_id": transaction_id # Simpan ID Transaksi Midtrans yang sebenarnya
+            "midtrans_order_id": transaction_id 
         }).eq("id", int(order_id)).execute()
 
         if not update_response.data:
             print(f"ERROR: Gagal memperbarui status order {order_id} di Supabase.")
-            # Kirim 500 jika update database gagal, agar Midtrans retry
             raise HTTPException(status_code=500, detail="Supabase update failed")
 
         return {"status": "ok", "journal_recorded": journal_recorded}
 
     except Exception as e:
         print(f"ERROR Processing Webhook: {e}")
-        # Kirim 500 agar Midtrans mengulang notifikasi
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 if __name__ == "__main__":
-    uvicorn.run("webhook_server:app", host="0.0.0.0", port=8000, reload=True)
+    # Gunakan port 8080 secara hardcode untuk stabilitas Railway/Docker
+    uvicorn.run("webhook_server:app", host="0.0.0.0", port=8080, reload=True)
