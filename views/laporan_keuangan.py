@@ -45,6 +45,7 @@ def get_base_data_and_filter(start_date, end_date):
     df_coa = data["coa"]
     df_movements = data["inventory_movements"]
     
+    # Cek data utama
     if df_entries.empty or df_lines.empty:
         empty_merged = pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount'])
         return empty_merged, df_coa, df_movements
@@ -190,4 +191,249 @@ def create_income_statement_df(df_tb_adj, Total_Revenue, Total_Expense, Net_Inco
     Total_6, df_6 = get_saldo_and_sum(df_is, [6], 'Debit')
     data.append(['BEBAN OPERASIONAL', '', ''])
     for index, row in df_6.iterrows():
-        data.append([row['
+        data.append([row['Nama Akun'], row['Debit'], ''])
+    data.append(['TOTAL BEBAN OPERASIONAL', '', Total_6])
+    
+    Laba_Operasi = Laba_Kotor - Total_6
+    data.append(['LABA OPERASI', '', Laba_Operasi])
+
+    # BEBAN LAIN-LAIN (Akun 9)
+    Total_9, df_9 = get_saldo_and_sum(df_is, [9], 'Debit')
+    data.append(['BEBAN LAIN-LAIN', '', ''])
+    for index, row in df_9.iterrows():
+        data.append([row['Nama Akun'], row['Debit'], ''])
+    data.append(['TOTAL BEBAN LAIN-LAIN', '', Total_9])
+    
+    Laba_Bersih_Hitung = Laba_Operasi + Total_8 - Total_9
+
+    data.append(['LABA BERSIH', '', Laba_Bersih_Hitung])
+
+    return pd.DataFrame(data, columns=['Deskripsi', 'Jumlah', 'Total'])
+
+
+def create_balance_sheet_df(df_tb_adj, Modal_Akhir):
+    """Membuat DataFrame yang rapi untuk Laporan Posisi Keuangan."""
+    data = []
+    
+    df_bs = df_tb_adj[df_tb_adj['Tipe_Num'].isin([1, 2])].copy()
+    
+    # ASET (Akun 1)
+    data.append(['ASET', '', ''])
+    
+    # Aset Lancar (Kode Akun 1-1XXX)
+    data.append(['Aset Lancar', '', ''])
+    df_current_asset = df_bs[df_bs['Kode Akun'].astype(str).str.startswith('1-1')].copy()
+    for index, row in df_current_asset.iterrows():
+        data.append([row['Nama Akun'], row['Debit'] - row['Kredit'], ''])
+    Total_Aset_Lancar = df_current_asset['Debit'].sum() - df_current_asset['Kredit'].sum()
+    data.append(['TOTAL ASET LANCAR', '', Total_Aset_Lancar])
+    
+    # Aset Tetap (Kode Akun 1-2XXX)
+    data.append(['Aset Tetap', '', ''])
+    df_fixed_asset = df_bs[df_bs['Kode Akun'].astype(str).str.startswith('1-2')].copy()
+    for index, row in df_fixed_asset.iterrows():
+        data.append([row['Nama Akun'], row['Debit'] - row['Kredit'], ''])
+    Total_Aset_Tetap = df_fixed_asset['Debit'].sum() - df_fixed_asset['Kredit'].sum()
+    data.append(['TOTAL ASET TETAP', '', Total_Aset_Tetap])
+
+    Total_Aset = Total_Aset_Lancar + Total_Aset_Tetap
+    data.append(['TOTAL ASET', '', Total_Aset])
+    data.append(['', '', ''])
+    
+    # LIABILITAS & EKUITAS
+    data.append(['LIABILITAS & EKUITAS', '', ''])
+    
+    # Liabilitas Lancar (Kode Akun 2-1XXX)
+    data.append(['Liabilitas Lancar', '', ''])
+    df_current_liab = df_bs[df_bs['Kode Akun'].astype(str).str.startswith('2-1')].copy()
+    for index, row in df_current_liab.iterrows():
+        # Liabilitas ditampilkan sebagai Kredit (positif)
+        data.append([row['Nama Akun'], row['Kredit'] - row['Debit'], ''])
+    Total_Liabilitas_Lancar = df_current_liab['Kredit'].sum() - df_current_liab['Debit'].sum()
+    data.append(['TOTAL LIABILITAS LANCAR', '', Total_Liabilitas_Lancar])
+
+    # Liabilitas Jangka Panjang (Kode Akun 2-2XXX)
+    data.append(['Liabilitas Jangka Panjang', '', ''])
+    df_long_liab = df_bs[df_bs['Kode Akun'].astype(str).str.startswith('2-2')].copy()
+    for index, row in df_long_liab.iterrows():
+        data.append([row['Nama Akun'], row['Kredit'] - row['Debit'], ''])
+    Total_Liabilitas_Jangka_Panjang = df_long_liab['Kredit'].sum() - df_long_liab['Debit'].sum()
+    data.append(['TOTAL LIABILITAS JANGKA PANJANG', '', Total_Liabilitas_Jangka_Panjang])
+    
+    Total_Liabilitas = Total_Liabilitas_Lancar + Total_Liabilitas_Jangka_Panjang
+    data.append(['TOTAL LIABILITAS', '', Total_Liabilitas])
+
+    # EKUITAS
+    data.append(['EKUITAS', '', ''])
+    data.append(['Modal Pemilik Akhir', '', Modal_Akhir])
+    
+    Total_Liabilitas_Ekuitas = Total_Liabilitas + Modal_Akhir
+    data.append(['TOTAL LIABILITAS & EKUITAS', '', Total_Liabilitas_Ekuitas])
+
+    return pd.DataFrame(data, columns=['Deskripsi', 'Jumlah 1', 'Jumlah 2'])
+
+
+def calculate_closing_and_tb_after_closing(df_tb_adj):
+    """
+    Menghitung Jurnal Penutup (Closing Journal) dan Neraca Saldo Setelah Penutup.
+    """
+    
+    AKUN_MODAL = '3-1100'
+    AKUN_PRIVE = '3-1200'
+    AKUN_IKHTISAR_LR = '3-1300'
+    
+    # 1. HITUNG LABA BERSIH DARI TB ADJ
+    
+    Total_Revenue = df_tb_adj[df_tb_adj['Tipe_Num'].isin([4, 8])]['Kredit'].sum()
+    Total_Expense = df_tb_adj[df_tb_adj['Tipe_Num'].isin([5, 6, 9])]['Debit'].sum()
+    Prive_Value = df_tb_adj[df_tb_adj['Kode Akun'] == AKUN_PRIVE]['Debit'].sum()
+    Modal_Awal_Baris = df_tb_adj[df_tb_adj['Kode Akun'] == AKUN_MODAL]['Kredit'].sum()
+    
+    Net_Income = Total_Revenue - Total_Expense
+    
+    # 2. GENERATE NERACA SALDO SETELAH PENUTUP (TB CLOSING)
+    df_tb_closing = df_tb_adj.copy()
+    
+    # Tutup Akun Temporer (Set Debit/Kredit = 0)
+    df_tb_closing.loc[df_tb_closing['Tipe_Num'].isin([4, 5, 6, 8, 9]) | (df_tb_closing['Kode Akun'].isin([AKUN_PRIVE, AKUN_IKHTISAR_LR])), 
+                        ['TB ADJ Debit', 'TB ADJ Kredit']] = 0.0
+
+    # Sesuaikan Saldo Modal Akhir
+    Modal_Baru = Modal_Awal_Baris + Net_Income - Prive_Value
+    
+    df_tb_closing.loc[df_tb_closing['Kode Akun'] == AKUN_MODAL, 'TB ADJ Kredit'] = Modal_Baru
+    df_tb_closing.loc[df_tb_closing['Kode Akun'] == AKUN_MODAL, 'TB ADJ Debit'] = 0.0
+    
+    df_tb_closing.columns = ['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Debit', 'Kredit', 'MJ Debit', 'MJ Kredit', 'TB CLOSING Debit', 'TB CLOSING Kredit', 'Tipe_Num']
+
+    # Laporan Keuangan Akhir
+    df_laba_rugi = create_income_statement_df(df_tb_adj, Total_Revenue, Total_Expense, Net_Income)
+    df_re = pd.DataFrame({
+        'Deskripsi': ['Modal Awal', 'Laba Bersih Periode', 'Prive', 'Modal Akhir'],
+        'Jumlah': [Modal_Awal_Baris, Net_Income, -Prive_Value, Modal_Baru]
+    })
+    df_laporan_posisi_keuangan = create_balance_sheet_df(df_tb_adj, Modal_Baru)
+
+
+    return df_tb_closing, Net_Income, df_laba_rugi, df_re, df_laporan_posisi_keuangan
+
+
+def generate_reports():
+    """Menggabungkan logika laporan dan Worksheet."""
+    
+    # Tanggal Filter
+    today = date.today()
+    if "end_date" not in st.session_state:
+        st.session_state.end_date = today
+    if "start_date" not in st.session_state:
+        st.session_state.start_date = today.replace(day=1)
+    
+    start_date = st.sidebar.date_input("Tanggal Mulai", value=st.session_state.start_date)
+    end_date = st.sidebar.date_input("Tanggal Akhir", value=st.session_state.end_date)
+    
+    df_journal_merged, df_coa, df_movements = get_base_data_and_filter(start_date, end_date)
+    
+    # --- 1. NERACA SALDO SEBELUM PENYESUAIAN (TB BEFORE ADJ) ---
+    df_tb_before_adj = calculate_trial_balance(df_journal_merged, df_coa)
+
+    # --- 2. WORKSHEET (NS ADJ) ---
+    df_ws = df_coa[['account_code', 'account_name', 'account_type', 'normal_balance']].copy()
+    df_ws.columns = ['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Saldo Normal']
+    
+    df_ws = df_ws.merge(df_tb_before_adj[['Kode Akun', 'Debit', 'Kredit', 'Tipe_Num']], on='Kode Akun', how='left').fillna(0)
+    df_ws.columns = ['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Saldo Normal', 'TB Debit', 'TB Kredit', 'Tipe_Num']
+    
+    # LOGIKA JURNAL PENYESUAIAN (MJ DEBIT/KREDIT) - ASUMSI 0 UNTUK SAAT INI
+    df_ws['MJ Debit'] = 0.0
+    df_ws['MJ Kredit'] = 0.0
+
+    # TB AFTER ADJUSTMENT (TB ADJ)
+    df_ws['TB ADJ Debit'] = df_ws['TB Debit'] + df_ws['MJ Debit']
+    df_ws['TB ADJ Kredit'] = df_ws['TB Kredit'] + df_ws['MJ Kredit']
+
+    # --- 3. SIKLUS PENUTUPAN & LAPORAN KEUANGAN UTAMA (DARI TB ADJ) ---
+    df_tb_closing, net_income, df_laba_rugi, df_re, df_laporan_posisi_keuangan = calculate_closing_and_tb_after_closing(df_ws)
+    
+    # --- Tambahkan laporan pendukung (Jurnal Umum & Kartu Persediaan) ---
+    # Jurnal Umum: Panggil fungsi ini jika Anda ingin menampilkannya
+    df_general_journal = pd.DataFrame() # Placeholder
+    df_inventory_card = pd.DataFrame() # Placeholder
+
+    return {
+        "Laba Bersih": net_income,
+        "Neraca Saldo Sebelum Penyesuaian": df_tb_before_adj,
+        "Worksheet (Kertas Kerja)": df_ws,
+        "Laporan Laba Rugi": df_laba_rugi,
+        "Laporan Perubahan Modal": df_re,
+        "Laporan Posisi Keuangan": df_laporan_posisi_keuangan,
+        "Neraca Saldo Setelah Penutup": df_tb_closing[['Kode Akun', 'Nama Akun', 'TB CLOSING Debit', 'TB CLOSING Kredit']],
+        "Jurnal Umum": df_general_journal,
+        "Kartu Persediaan": df_inventory_card,
+    }
+
+
+def to_excel_bytes(reports):
+    """Menyimpan semua laporan ke dalam satu file Excel (BytesIO)"""
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        for sheet_name, df in reports.items():
+            if isinstance(df, pd.DataFrame):
+                clean_name = sheet_name.replace(" ", "_").replace("(", "").replace(")", "")[:30]
+                df.to_excel(writer, sheet_name=clean_name, index=False)
+            
+    processed_data = output.getvalue()
+    return processed_data
+
+
+def show_reports_page():
+    st.title("📊 Laporan Keuangan & Akuntansi Lengkap")
+    
+    st.sidebar.header("Filter Tanggal Laporan")
+    
+    reports = generate_reports()
+    net_income = reports.get("Laba Bersih", 0)
+    
+    st.markdown("---")
+    
+    # Tampilkan Ringkasan Laba Bersih
+    if net_income >= 0:
+        st.success(f"**Laba Bersih (Net Income): Rp {net_income:,.0f}**")
+    else:
+        st.error(f"**Rugi Bersih (Net Loss): Rp {net_income:,.0f}**")
+    st.markdown("---")
+    
+    # Tampilkan Worksheet
+    st.header("1. Kertas Kerja (Worksheet)")
+    st.info("Worksheet menampilkan Neraca Saldo Setelah Penyesuaian (TB ADJ).")
+    st.dataframe(reports["Worksheet (Kertas Kerja)"], use_container_width=True)
+    
+    # Tampilkan Laporan Keuangan Utama
+    st.header("2. Laporan Laba Rugi (Income Statement)")
+    st.dataframe(reports["Laporan Laba Rugi"], use_container_width=True)
+    
+    st.header("3. Laporan Perubahan Modal (Retained Earnings)")
+    st.dataframe(reports["Laporan Perubahan Modal"], use_container_width=True)
+    
+    st.header("4. Laporan Posisi Keuangan (Balance Sheet)")
+    st.dataframe(reports["Laporan Posisi Keuangan"], use_container_width=True)
+    
+    st.header("5. Neraca Saldo Setelah Penutup (TB CLOSING)")
+    st.dataframe(reports["Neraca Saldo Setelah Penutup"], use_container_width=True)
+
+    st.markdown("---")
+
+    # Tombol Download
+    st.subheader("Unduh Semua Laporan")
+    
+    excel_data = to_excel_bytes(reports)
+
+    st.download_button(
+        label="📥 Unduh Semua Laporan sebagai Excel",
+        data=excel_data,
+        file_name=f'Laporan_Akuntansi_Siklus_Lengkap_{date.today().strftime("%Y%m%d")}.xlsx',
+        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+
+
+if __name__ == "__main__":
+    show_reports_page()
