@@ -11,7 +11,6 @@ import numpy as np
 def fetch_all_accounting_data():
     """Mengambil semua data yang diperlukan dari Supabase."""
     
-    # Mengambil data jurnal, COA, dan inventory movements
     try:
         journal_lines_response = supabase.table("journal_lines").select("*").execute()
         journal_entries_response = supabase.table("journal_entries").select("id, transaction_date, description, order_id").execute()
@@ -26,7 +25,7 @@ def fetch_all_accounting_data():
         }
     except Exception as e:
         st.error(f"Gagal mengambil data dari Supabase: {e}")
-        # Kembalikan DataFrame kosong jika gagal
+        empty_merged = pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount'])
         return {
             "journal_lines": pd.DataFrame(),
             "journal_entries": pd.DataFrame(),
@@ -43,17 +42,13 @@ def get_base_data_and_filter(start_date, end_date):
     df_coa = data["coa"]
     df_movements = data["inventory_movements"]
     
-    # Cek data utama
     if df_entries.empty or df_lines.empty:
-        st.warning("Tidak ada entri jurnal atau baris jurnal yang ditemukan di database.")
         empty_merged = pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount'])
         return empty_merged, df_coa, df_movements
         
     try:
-        # Konversi tanggal dengan penanganan error
         df_entries['transaction_date'] = pd.to_datetime(df_entries['transaction_date'], errors='coerce').dt.normalize()
     except KeyError:
-        st.error("Error: Kolom 'transaction_date' hilang atau salah nama di tabel journal_entries.")
         return pd.DataFrame(), df_coa, df_movements
     
     # 1. Filter entri jurnal berdasarkan rentang tanggal
@@ -62,19 +57,15 @@ def get_base_data_and_filter(start_date, end_date):
         (df_entries['transaction_date'] <= pd.to_datetime(end_date))
     ].copy()
 
-    # 2. Sisakan Saldo Awal (Asumsi Jurnal ID 5 adalah Saldo Awal) terlepas dari rentang tanggal
+    # 2. Sisakan Saldo Awal (Asumsi Jurnal ID 5 adalah Saldo Awal)
     df_saldo_awal = df_entries[df_entries['id'] == 5].copy()
 
-    # Gabungkan entri yang difilter dengan Saldo Awal
     df_journal_entries_final = pd.concat([df_filtered_entries, df_saldo_awal]).drop_duplicates(subset=['id'], keep='first')
         
-    # Pencegahan Merge Error
     if df_journal_entries_final.empty:
-        st.warning(f"Tidak ada transaksi yang ditemukan antara {start_date.strftime('%Y-%m-%d')} dan {end_date.strftime('%Y-%m-%d')}.")
-        empty_merged = pd.DataFrame(columns=df_lines.columns.tolist() + df_entries.columns.tolist() + df_coa.columns.tolist())
+        empty_merged = pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount'])
         return empty_merged, df_coa, df_movements
 
-    # 3. Gabungan Jurnal Utama yang sudah difilter
     df_journal_merged = df_lines.merge(df_journal_entries_final, left_on='journal_id', right_on='id', suffixes=('_line', '_entry'))
     df_journal_merged = df_journal_merged.merge(df_coa, on='account_code')
     
@@ -97,9 +88,8 @@ def calculate_trial_balance(df_journal, df_coa):
             Total_Kredit=('credit_amount', 'sum')
         ).reset_index()
         
-        df_tb = df_tb.merge(df_coa, on='account_code', how='right').fillna(0) # Join ke COA untuk semua akun
+        df_tb = df_tb.merge(df_coa, on='account_code', how='right').fillna(0)
         
-        # Logika perhitungan Saldo Bersih dan Saldo Normal
         df_tb['Saldo Bersih'] = df_tb['Total_Debit'] - df_tb['Total_Kredit']
         
         df_tb['Debit'] = df_tb.apply(
@@ -117,28 +107,104 @@ def calculate_trial_balance(df_journal, df_coa):
     return df_tb
 
 
-def calculate_financial_statements(df_ws):
-    """Menghitung Laba Rugi, Perubahan Modal, dan Posisi Keuangan dari Worksheet (TB ADJ)."""
+def calculate_closing_and_tb_after_closing(df_tb_adj):
+    """
+    Menghitung Jurnal Penutup (Closing Journal) dan Neraca Saldo Setelah Penutup.
+    Ini adalah proses virtual (non-database).
+    """
     
-    # Mengambil nilai TB ADJ untuk perhitungan
-    df_tb_adj = df_ws[['Kode Akun', 'Nama Akun', 'Tipe Akun', 'TB ADJ Debit', 'TB ADJ Kredit']].copy()
-    df_tb_adj['Saldo Bersih'] = df_tb_adj['TB ADJ Debit'] - df_tb_adj['TB ADJ Kredit']
+    # Kunci Akun
+    AKUN_MODAL = '3-1100'
+    AKUN_PRIVE = '3-1200'
+    AKUN_IKHTISAR_LR = '3-1300'
+    
+    # 1. HITUNG LABA BERSIH DARI TB ADJ
+    df_temp = df_tb_adj.copy()
+    
+    # Total Pendapatan (Akun 4 dan 8)
+    Total_Revenue = df_temp[df_temp['Kode Akun'].astype(str).str.startswith(('4', '8'))]['Kredit'].sum()
+    
+    # Total Beban (Akun 5, 6, 9)
+    Total_Expense = df_temp[df_temp['Kode Akun'].astype(str).str.startswith(('5', '6', '9'))]['Debit'].sum()
+    
+    Net_Income = Total_Revenue - Total_Expense
+    
+    # 2. GENERATE JURNAL PENUTUP (VIRTUAL)
+    cj_data = []
 
-    # --- 1. LAPORAN LABA RUGI (INCOME STATEMENT) ---
-    # Akun Tipe 4 (Pendapatan), 5 (HPP), 6 (Beban), 8 (Pend. Lain), 9 (Beban Lain)
-    df_is = df_tb_adj[df_tb_adj['Tipe Akun'].astype(str).str.startswith(('4', '5', '6', '8', '9'))].copy()
+    # CJ 1: Tutup Pendapatan (Debit Pendapatan, Kredit Ikhtisar L/R)
+    for index, row in df_temp[df_temp['Tipe Akun'].astype(str).str.startswith(('4', '8'))].iterrows():
+        if row['Kredit'] > 0:
+            cj_data.append({'Kode Akun': row['Kode Akun'], 'Nama Akun': row['Nama Akun'], 'Debit': row['Kredit'], 'Kredit': 0.0})
+    cj_data.append({'Kode Akun': AKUN_IKHTISAR_LR, 'Nama Akun': 'Ikhtisar laba/rugi', 'Debit': 0.0, 'Kredit': Total_Revenue})
+
+    # CJ 2: Tutup Beban (Debit Ikhtisar L/R, Kredit Beban)
+    cj_data.append({'Kode Akun': AKUN_IKHTISAR_LR, 'Nama Akun': 'Ikhtisar laba/rugi', 'Debit': Total_Expense, 'Kredit': 0.0})
+    for index, row in df_temp[df_temp['Tipe Akun'].astype(str).str.startswith(('5', '6', '9'))].iterrows():
+        if row['Debit'] > 0:
+            cj_data.append({'Kode Akun': row['Kode Akun'], 'Nama Akun': row['Nama Akun'], 'Debit': 0.0, 'Kredit': row['Debit']})
+            
+    # CJ 3: Tutup Ikhtisar L/R ke Modal
+    if Net_Income > 0:
+        cj_data.append({'Kode Akun': AKUN_IKHTISAR_LR, 'Nama Akun': 'Ikhtisar laba/rugi', 'Debit': Net_Income, 'Kredit': 0.0})
+        cj_data.append({'Kode Akun': AKUN_MODAL, 'Nama Akun': 'Modal Pemilik', 'Debit': 0.0, 'Kredit': Net_Income})
+    elif Net_Income < 0:
+        cj_data.append({'Kode Akun': AKUN_MODAL, 'Nama Akun': 'Modal Pemilik', 'Debit': -Net_Income, 'Kredit': 0.0})
+        cj_data.append({'Kode Akun': AKUN_IKHTISAR_LR, 'Nama Akun': 'Ikhtisar laba/rugi', 'Debit': 0.0, 'Kredit': -Net_Income})
+        
+    # CJ 4: Tutup Prive (Debit Modal, Kredit Prive)
+    Prive_Value = df_temp[df_temp['Kode Akun'] == AKUN_PRIVE]['Debit'].sum()
+    if Prive_Value > 0:
+        cj_data.append({'Kode Akun': AKUN_MODAL, 'Nama Akun': 'Modal Pemilik', 'Debit': Prive_Value, 'Kredit': 0.0})
+        cj_data.append({'Kode Akun': AKUN_PRIVE, 'Nama Akun': 'Prive pemilik', 'Debit': 0.0, 'Kredit': Prive_Value})
     
-    Total_Pendapatan = df_is[df_is['Tipe Akun'].astype(str).str.startswith('4')]['Saldo Bersih'].sum() * -1
-    Total_HPP = df_is[df_is['Tipe Akun'].astype(str).str.startswith('5')]['Saldo Bersih'].sum()
-    Total_Beban_Op = df_is[df_is['Tipe Akun'].astype(str).str.startswith('6')]['Saldo Bersih'].sum()
+    df_closing_journal = pd.DataFrame(cj_data)
+
+    # 3. GENERATE NERACA SALDO SETELAH PENUTUP (TB CLOSING)
     
-    Laba_Kotor = Total_Pendapatan - Total_HPP
-    Laba_Operasi = Laba_Kotor - Total_Beban_Op
+    # Mulai dari TB After Adj
+    df_tb_closing = df_tb_adj.copy()
     
-    # Pendapatan/Beban Lain-lain
-    Pendapatan_Lain = df_is[df_is['Tipe Akun'].astype(str).str.startswith('8')]['Saldo Bersih'].sum() * -1
-    Beban_Lain = df_is[df_is['Tipe Akun'].astype(str).str.startswith('9')]['Saldo Bersih'].sum()
+    # Tutup Akun Temporer (Set Debit/Kredit = 0)
+    # Akun Pendapatan, Beban, Ikhtisar L/R, Prive
+    df_tb_closing.loc[df_tb_closing['Tipe Akun'].astype(str).str.startswith(('4', '5', '6', '8', '9', '3-1200', '3-1300')), ['TB ADJ Debit', 'TB ADJ Kredit']] = 0.0
+
+    # Sesuaikan Saldo Modal Akhir
+    Modal_Lama = df_tb_closing[df_tb_closing['Kode Akun'] == AKUN_MODAL]['TB ADJ Kredit'].sum()
     
-    Laba_Bersih = Laba_Operasi + Pendapatan_Lain - Beban_Lain
+    Modal_Baru = Modal_Lama + Net_Income - Prive_Value
     
-    # --- 2. LAPORAN PERUBAHAN MODAL (
+    df_tb_closing.loc[df_tb_closing['Kode Akun'] == AKUN_MODAL, 'TB ADJ Kredit'] = Modal_Baru
+    df_tb_closing.loc[df_tb_closing['Kode Akun'] == AKUN_MODAL, 'TB ADJ Debit'] = 0.0
+
+    df_tb_closing.columns = ['Kode Akun', 'Nama Akun', 'Tipe Akun', 'TB Debit', 'TB Kredit', 'MJ Debit', 'MJ Kredit', 'TB CLOSING Debit', 'TB CLOSING Kredit']
+
+    return df_closing_journal, df_tb_closing, Net_Income
+
+# ... (Sisa fungsi lainnya, seperti to_excel_bytes, show_reports_page, dan General Ledger, perlu disesuaikan untuk menggunakan fungsi baru ini) ...
+
+
+def show_reports_page():
+    st.title("📊 Laporan Keuangan & Akuntansi Lengkap")
+    
+    st.sidebar.header("Filter Tanggal Laporan")
+    
+    reports, df_journal_merged, df_coa = generate_reports()
+    
+    # ... (Tampilan laporan di sini) ...
+
+    # --- Tampilkan Jurnal Penutup dan TB Closing ---
+    df_cj, df_tb_closing, net_income = calculate_closing_and_tb_after_closing(reports["Worksheet (Kertas Kerja)"])
+    
+    st.markdown("---")
+    st.header("5. Jurnal Penutup (Closing Journal)")
+    st.info(f"Laba Bersih yang ditutup: Rp {net_income:,.0f}")
+    st.dataframe(df_cj, use_container_width=True)
+    
+    st.header("6. Neraca Saldo Setelah Penutup (TB CLOSING)")
+    st.dataframe(df_tb_closing[['Kode Akun', 'Nama Akun', 'TB CLOSING Debit', 'TB CLOSING Kredit']], use_container_width=True)
+
+    # ... (Tambahkan kembali tombol download Excel yang disesuaikan) ...
+
+if __name__ == "__main__":
+    show_reports_page()
