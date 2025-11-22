@@ -18,15 +18,8 @@ def fetch_all_accounting_data():
         inventory_response = supabase.table("inventory_movements").select("*, products(name)").execute()
         
         df_entries = pd.DataFrame(journal_entries_response.data)
-        
-        # --- PERBAIKAN FIX: MENGHAPUS INFORMASI ZONA WAKTU ---
-        df_entries['transaction_date'] = pd.to_datetime(df_entries['transaction_date'], errors='coerce')
-        
-        # Hapus zona waktu jika ada, untuk konsistensi (TZ-naive)
-        if df_entries['transaction_date'].dt.tz is not None:
-             df_entries['transaction_date'] = df_entries['transaction_date'].dt.tz_localize(None)
-
-        df_entries['transaction_date'] = df_entries['transaction_date'].dt.normalize()
+        # Konversi Tanggal di Sumber (di dalam cache)
+        df_entries['transaction_date'] = pd.to_datetime(df_entries['transaction_date'], errors='coerce').dt.normalize()
         
         return {
             "journal_lines": pd.DataFrame(journal_lines_response.data).fillna(0),
@@ -57,6 +50,9 @@ def get_base_data_and_filter(start_date, end_date):
         empty_merged = pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount'])
         return empty_merged, df_coa, df_movements
         
+    # --- PERBAIKAN FOKUS: Memaksa konversi tipe data TEPAT SEBELUM FILTER ---
+    df_entries['transaction_date'] = df_entries['transaction_date'].astype('datetime64[ns]')
+    
     # Konversi filter date input ke tipe datetime
     filter_start = pd.to_datetime(start_date)
     filter_end = pd.to_datetime(end_date)
