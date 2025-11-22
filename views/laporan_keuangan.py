@@ -139,7 +139,6 @@ def calculate_closing_and_tb_after_closing(df_tb_adj):
     
     # 1. HITUNG LABA BERSIH DARI TB ADJ
     
-    # FIX: Menggunakan kolom TB ADJ KREDIT/DEBIT
     Total_Revenue = df_tb_adj[df_tb_adj['Tipe_Num'].isin([4, 8])]['TB ADJ Kredit'].sum()
     Total_Expense = df_tb_adj[df_tb_adj['Tipe_Num'].isin([5, 6, 9])]['TB ADJ Debit'].sum()
     Prive_Value = df_tb_adj[df_tb_adj['Kode Akun'] == AKUN_PRIVE]['TB ADJ Debit'].sum()
@@ -160,7 +159,6 @@ def calculate_closing_and_tb_after_closing(df_tb_adj):
     df_tb_closing.loc[df_tb_closing['Kode Akun'] == AKUN_MODAL, 'TB ADJ Kredit'] = Modal_Baru
     df_tb_closing.loc[df_tb_closing['Kode Akun'] == AKUN_MODAL, 'TB ADJ Debit'] = 0.0
     
-    # FIX: Memperbaiki daftar kolom (11 elemen). Ini adalah fix untuk ValueError
     df_tb_closing.columns = ['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Saldo Normal', 'TB Debit', 'TB Kredit', 'Tipe_Num', 'MJ Debit', 'MJ Kredit', 'TB CLOSING Debit', 'TB CLOSING Kredit']
 
     # Laporan Keuangan Akhir
