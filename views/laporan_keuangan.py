@@ -42,7 +42,7 @@ def get_base_data_and_filter(start_date, end_date):
     """Mengambil dan menggabungkan data jurnal, lalu memfilter berdasarkan tanggal."""
     data = fetch_all_accounting_data()
     df_lines = data["journal_lines"]
-    df_entries = data["journal_entries"]
+    df_entries = data["journal_entries"].copy() # Gunakan copy untuk modifikasi
     df_coa = data["coa"]
     df_movements = data["inventory_movements"]
     
@@ -51,9 +51,15 @@ def get_base_data_and_filter(start_date, end_date):
         empty_merged = pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount'])
         return empty_merged, df_coa, df_movements
         
-    # --- PERBAIKAN: Hapus Konversi Tanggal di Sini ---
-    # Sekarang, kita hanya perlu membandingkan karena df_entries sudah bertipe datetime
-
+    # --- PERBAIKAN: MEMAKSA TIPE DATA DATETIME SEBELUM FILTER ---
+    # Ini mengatasi TypeError yang disebabkan oleh cache Pandas
+    try:
+        df_entries['transaction_date'] = pd.to_datetime(df_entries['transaction_date'], errors='coerce').dt.normalize()
+    except KeyError:
+        # Jika kolom hilang, kembalikan kosong
+        return pd.DataFrame(), df_coa, df_movements
+    
+    # 1. Filter entri jurnal berdasarkan rentang tanggal
     df_filtered_entries = df_entries[
         (df_entries['transaction_date'] >= pd.to_datetime(start_date)) & 
         (df_entries['transaction_date'] <= pd.to_datetime(end_date))
@@ -74,7 +80,6 @@ def get_base_data_and_filter(start_date, end_date):
         by=['transaction_date', 'journal_id', 'debit_amount'], 
         ascending=[True, True, False]
     ), df_coa, df_movements
-
 
 def calculate_trial_balance(df_journal, df_coa):
     """Menghitung Neraca Saldo (TB) dari data jurnal yang digabungkan."""
