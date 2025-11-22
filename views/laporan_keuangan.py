@@ -45,13 +45,11 @@ def get_base_data_and_filter(start_date, end_date):
     df_coa = data["coa"]
     df_movements = data["inventory_movements"]
     
-    # Cek data utama
     if df_entries.empty or df_lines.empty:
         empty_merged = pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount'])
         return empty_merged, df_coa, df_movements
         
     # --- PERBAIKAN FINAL (Mengatasi TypeError): Memaksa konversi tipe data DATETIME ---
-    # Meskipun sudah dikonversi di cache, kita ulangi untuk memastikan tipe data tetap 'datetime64[ns]'
     df_entries['transaction_date'] = pd.to_datetime(df_entries['transaction_date'], errors='coerce').dt.normalize()
     
     # 1. Filter entri jurnal berdasarkan rentang tanggal
@@ -180,7 +178,7 @@ def create_income_statement_df(df_tb_adj, Total_Revenue, Total_Expense, Net_Inco
 
     # HPP (Akun 5)
     Total_5, df_5 = get_saldo_and_sum(df_is, [5], 'Debit')
-    data.append(['HARGA POKOK PENJUALan', '', ''])
+    data.append(['HARGA POKOK PENJUALAN', '', ''])
     for index, row in df_5.iterrows():
         data.append([row['Nama Akun'], row['Debit'], ''])
     data.append(['TOTAL HPP', '', Total_5])
@@ -192,4 +190,4 @@ def create_income_statement_df(df_tb_adj, Total_Revenue, Total_Expense, Net_Inco
     Total_6, df_6 = get_saldo_and_sum(df_is, [6], 'Debit')
     data.append(['BEBAN OPERASIONAL', '', ''])
     for index, row in df_6.iterrows():
-        data.append([row['Nama Akun'], row['Debit'], ''])
+        data.append([row['
