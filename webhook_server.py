@@ -1,22 +1,16 @@
 import os
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException
-from supabase_client import supabase # Menggunakan klien Supabase yang sudah ada
+from supabase_client import supabase 
 from dotenv import load_dotenv
-from datetime import date # Diperlukan untuk mencatat tanggal movement
+from datetime import date 
 
 load_dotenv()
 
 app = FastAPI(title="Midtrans Webhook Listener & Accounting Processor")
 
-# --- Ambil Kunci Midtrans untuk Verifikasi ---
-# Penting: Gunakan Server Key untuk memverifikasi Webhook
 MIDTRANS_SERVER_KEY = os.getenv("MIDTRANS_SERVER_KEY")
 
-if not MIDTRANS_SERVER_KEY:
-    # Dalam lingkungan Railway, ini akan menyebabkan crash, yang kita ingin hindari 502
-    print("FATAL: MIDTRANS_SERVER_KEY tidak ditemukan di .env")
-    
 # ===============================================
 # FUNGSI AKUNTANSI & INVENTORY
 # ===============================================
@@ -27,7 +21,6 @@ def record_sales_journal(order_id: int):
     """
     try:
         # 1. Ambil Detail Pesanan dan Barang (Order Items)
-        # Mengambil data akun dan cost_price dari tabel products
         order_response = supabase.table("orders").select(
             "*, order_items(*, products(id, cost_price, inventory_account_code, hpp_account_code))"
         ).eq("id", order_id).execute()
@@ -48,7 +41,6 @@ def record_sales_journal(order_id: int):
 
         # --- 2. JURNAL 1: PENJUALAN (CASH vs REVENUE) ---
         
-        # Buat Entri Jurnal Utama (Header)
         journal = supabase.table("journal_entries").insert({
             "order_id": order_id,
             "description": f"Jurnal Penjualan Tunai Order ID: {order_id}",
@@ -56,15 +48,13 @@ def record_sales_journal(order_id: int):
         }).execute().data[0]
         journal_id = journal["id"]
 
-        # Catat Garis Jurnal untuk Penjualan
-        
-        # DEBIT: KAS (1-1100) - Penerimaan Uang
+        # DEBIT: KAS
         lines.append({
             "journal_id": journal_id, "account_code": CASH_ACCOUNT, 
             "debit_amount": total_revenue, "credit_amount": 0
         })
         
-        # KREDIT: PENJUALAN (4-1100) - Pengakuan Pendapatan
+        # KREDIT: PENJUALAN
         lines.append({
             "journal_id": journal_id, "account_code": SALES_ACCOUNT, 
             "debit_amount": 0, "credit_amount": total_revenue
@@ -84,14 +74,13 @@ def record_sales_journal(order_id: int):
             if cost_price > 0 and quantity_sold > 0:
                 cost_of_sale = quantity_sold * cost_price
 
-                # Jurnal HPP:
-                # DEBIT: HPP (5-1100) - Pengakuan Beban
+                # DEBIT: HPP
                 lines.append({
                     "journal_id": journal_id, "account_code": hpp_acc, 
                     "debit_amount": cost_of_sale, "credit_amount": 0
                 })
                 
-                # KREDIT: PERSEDIAAN (Akun Inventori Produk) - Pengurangan Aset
+                # KREDIT: PERSEDIAAN
                 lines.append({
                     "journal_id": journal_id, "account_code": inventory_acc, 
                     "debit_amount": 0, "credit_amount": cost_of_sale
@@ -102,19 +91,16 @@ def record_sales_journal(order_id: int):
                     "product_id": product_id,
                     "movement_date": str(date.today()), 
                     "movement_type": "ISSUE", 
-                    "quantity_change": -quantity_sold, # Nilai negatif untuk pengurangan
+                    "quantity_change": -quantity_sold, 
                     "unit_cost": cost_price,
                     "reference_id": f"ORDER-{order_id}",
                 })
 
-        # 4. Simpan Semua Garis Jurnal
         if lines:
             supabase.table("journal_lines").insert(lines).execute()
         
-        # 5. Simpan Semua Inventory Movements
         if movements_to_insert:
             supabase.table("inventory_movements").insert(movements_to_insert).execute()
-
 
         print(f"SUCCESS: Jurnal dan Inventory Movement untuk Order {order_id} berhasil dicatat.")
         return True
@@ -133,23 +119,29 @@ async def midtrans_notification(request: Request):
     try:
         payload = await request.json()
         
-        order_id = payload.get("order_id")
+        # Ambil order_id mentah (misal: "15-1732412345")
+        raw_order_id = str(payload.get("order_id", ""))
+        
+        # BERSIHKAN ID: Ambil bagian sebelum tanda strip (-)
+        if "-" in raw_order_id:
+            order_id = raw_order_id.split("-")[0]
+        else:
+            order_id = raw_order_id
+            
         transaction_status = payload.get("transaction_status")
         transaction_id = payload.get("transaction_id")
         
         if not order_id:
             raise HTTPException(status_code=400, detail="Missing order_id in payload")
 
-        print(f"Notifikasi diterima untuk Order ID: {order_id}. Status: {transaction_status}")
+        print(f"Notifikasi diterima untuk Order ID Asli: {order_id} (Raw: {raw_order_id}). Status: {transaction_status}")
 
         new_status = ""
         journal_recorded = False
 
-        # Verifikasi dan tentukan status akhir
         if transaction_status in ["capture", "settlement"]:
             new_status = "settle"
-            
-            # PENTING: Panggil fungsi pencatatan jurnal
+            # Catat jurnal menggunakan ID asli yang sudah bersih
             journal_recorded = record_sales_journal(int(order_id)) 
             
         elif transaction_status == "pending":
@@ -159,7 +151,7 @@ async def midtrans_notification(request: Request):
         else:
             new_status = transaction_status
             
-        # UPDATE STATUS ORDER DI SUPABASE
+        # UPDATE STATUS DI SUPABASE MENGGUNAKAN ID ASLI
         update_response = supabase.table("orders").update({
             "status": new_status,
             "midtrans_order_id": transaction_id 
@@ -167,7 +159,9 @@ async def midtrans_notification(request: Request):
 
         if not update_response.data:
             print(f"ERROR: Gagal memperbarui status order {order_id} di Supabase.")
-            raise HTTPException(status_code=500, detail="Supabase update failed")
+            # Jangan raise error 500 ke Midtrans jika update DB gagal tapi notif valid, 
+            # supaya Midtrans tidak mengirim ulang terus menerus. Cukup log saja.
+            return {"status": "error", "message": "Supabase update failed but notification received"}
 
         return {"status": "ok", "journal_recorded": journal_recorded}
 
@@ -177,5 +171,4 @@ async def midtrans_notification(request: Request):
 
 
 if __name__ == "__main__":
-    # Gunakan port 8080 secara hardcode untuk stabilitas Railway/Docker
     uvicorn.run("webhook_server:app", host="0.0.0.0", port=8080, reload=True)
