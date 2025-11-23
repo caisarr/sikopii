@@ -165,10 +165,8 @@ def create_general_journal_report(df_journal):
     df_ju['Tanggal'] = df_ju['transaction_date'].dt.strftime('%Y-%m-%d')
     
     # Pilih dan atur ulang kolom. description_entry adalah deskripsi transaksi utama.
-    df_ju = df_ju[[
-        'Tanggal', 'description_entry', 'account_code', 'account_name', 
-        'debit_amount', 'credit_amount', 'journal_id'
-    ]].copy()
+    # FIX: Ensure clean column list to avoid Python multi-line issues.
+    df_ju = df_ju[['Tanggal', 'description_entry', 'account_code', 'account_name', 'debit_amount', 'credit_amount', 'journal_id']].copy()
     
     df_ju.columns = [
         'Tanggal', 'Deskripsi Transaksi', 'Kode Akun', 'Nama Akun', 
