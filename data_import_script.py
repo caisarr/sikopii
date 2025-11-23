@@ -15,6 +15,29 @@ PRODUCT_CODE_TO_ID = {
     "C02": 6,
 }
 
+# --- FUNGSI PEMBERSIH ANGKA PALING AMAN ---
+def clean_rupiah_number(val):
+    """Membersihkan string Rupiah Indonesia/Eropa (e.g., 13.600.000) menjadi float."""
+    # 1. Handle non-string/kosong
+    if pd.isna(val) or not isinstance(val, str):
+        return 0.0
+    
+    val = val.strip()
+    if not val:
+        return 0.0
+
+    # 2. Hapus titik (Thousands Separator)
+    val = val.replace('.', '')
+    
+    # 3. Ganti koma (Decimal Separator) ke titik
+    val = val.replace(',', '.')
+    
+    # 4. Konversi ke float, return 0.0 jika gagal
+    try:
+        return float(val)
+    except ValueError:
+        return 0.0
+
 
 # --- 1. FUNGSI PEMBERSIHAN DATA (URUTAN YANG BENAR) ---
 def clear_all_data():
@@ -87,23 +110,11 @@ def import_coa(file_path):
 # --- 3. LOGIKA IMPORT JURNAL UMUM (Hanya Insert) ---
 def import_general_journal(file_path):
     print(f"\n--- Memulai Import Jurnal Umum (GJ) dari {file_path} ---")
-    
-    # Fungsi pembersihan Rupiah yang definitif (menghilangkan titik ribuan, mengganti koma desimal)
-    def clean_rupiah_number(series):
-        series = series.astype(str).str.strip()
-        # 1. Hapus titik (Ribuan Separator)
-        series = series.str.replace('.', '', regex=False)
-        # 2. Ganti koma desimal ke titik
-        series = series.str.replace(',', '.', regex=False)
-        # 3. Ganti string kosong (yang tersisa setelah cleaning) menjadi NaN, lalu ke float
-        return series.replace('', np.nan).astype(float).fillna(0)
-    
     try:
-        # Delimiter titik koma (;). Membaca semua kolom dan memilih berdasarkan slicing untuk robustess.
+        # Delimiter titik koma (;). Membaca semua kolom dan memilih berdasarkan slicing.
         df_raw = pd.read_csv(file_path, header=6, delimiter=';', engine='python')
         
         # Slicing Kolom untuk mengambil: [DATE (0), DESCRIPTION (2), REF (3), DEBET (4), CREDIT (5)]
-        # Ini mengatasi error out-of-bounds.
         df_raw = df_raw.iloc[:, [0, 2, 3, 4, 5]].copy()
         df_raw.columns = ['Date', 'Description', 'REF', 'DEBET', 'CREDIT']
         
@@ -115,9 +126,9 @@ def import_general_journal(file_path):
     df_raw['Description'] = df_raw['Description'].ffill() 
     df_lines = df_raw.dropna(subset=['REF']).copy()
     
-    # ✅ KOREKSI FINAL VALUE ERROR UNTUK DEBET & CREDIT
-    df_lines['DEBET'] = clean_rupiah_number(df_lines['DEBET'])
-    df_lines['CREDIT'] = clean_rupiah_number(df_lines['CREDIT'])
+    # ✅ KOREKSI FINAL VALUE ERROR UNTUK DEBET & CREDIT (Memanggil fungsi aman)
+    df_lines['DEBET'] = df_lines['DEBET'].apply(clean_rupiah_number)
+    df_lines['CREDIT'] = df_lines['CREDIT'].apply(clean_rupiah_number)
     
     df_lines['full_date_str'] = df_lines['Date'].astype(str) + ' Nov 2025'
     df_lines['transaction_date'] = pd.to_datetime(df_lines['full_date_str'], format='%d %b %Y', errors='coerce').dt.normalize()
@@ -135,6 +146,7 @@ def import_general_journal(file_path):
             print(f"ERROR memasukkan header untuk {desc} pada {date.date()}: {e}"); continue
 
         for _, row in group.iterrows():
+            # Filter hanya baris yang memiliki nilai Rupiah > 0
             if row['DEBET'] > 0 or row['CREDIT'] > 0:
                 lines_to_insert.append({
                     "journal_id": journal_id, "account_code": row['REF'].strip(),
@@ -145,7 +157,8 @@ def import_general_journal(file_path):
         response = supabase.table("journal_lines").insert(lines_to_insert).execute()
         print(f"Import Journal Lines Selesai. Total {len(response.data)} baris jurnal dimasukkan.")
     else:
-        print("Tidak ada baris jurnal yang dimasukkan.")
+        # Peringatan ini muncul jika konversi gagal total.
+        print("Peringatan: Tidak ada baris jurnal yang dimasukkan. Periksa kembali format angka di file GJ Anda.")
     print("Import Jurnal Umum Selesai.")
 
 # --- 4. LOGIKA IMPORT INVENTORY MOVEMENTS (Kartu Persediaan) ---
