@@ -23,7 +23,7 @@ def clear_all_data():
     """
     print("\n--- Membersihkan Data Database (Wajib) ---")
     
-    # 1. Hapus Tabel Anak Terdalam (yang tidak punya anak lain)
+    # 1. Hapus Tabel Anak Terdalam (yang paling banyak merujuk produk/akun)
     print("Aksi: Membersihkan inventory_movements...")
     supabase.table("inventory_movements").delete().neq("id", 0).execute() 
     
@@ -40,11 +40,9 @@ def clear_all_data():
     print("Aksi: Membersihkan orders...")
     supabase.table("orders").delete().neq("id", 0).execute() 
 
-    # 3. Hapus Tabel Produk (Tabel ini menyebabkan error karena merujuk COA)
+    # 3. Hapus Tabel Products (Tabel ini menyebabkan error karena merujuk COA)
+    # Ini harus berhasil menghapus baris yang merujuk COA.
     print("Aksi: Membersihkan products...")
-    # NOTE: Kita tidak bisa menghapus seluruh baris produk karena Anda mungkin punya data produk di sini.
-    # Namun, karena kita tidak memiliki skrip impor produk, kita harus hapus untuk menanggulangi error.
-    # Jika produk Anda banyak, Anda harus menjalankan skrip impor produk setelah ini.
     supabase.table("products").delete().neq("id", 0).execute() 
 
     # 4. Hapus Tabel Induk Paling Atas (Sekarang Aman Dihapus)
