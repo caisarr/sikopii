@@ -41,8 +41,10 @@ def record_sales_journal(order_id: int):
 
         # --- 2. JURNAL 1: PENJUALAN (CASH vs REVENUE) ---
         
+        # [PERBAIKAN PENTING] Menambahkan transaction_date agar muncul di laporan
         journal = supabase.table("journal_entries").insert({
             "order_id": order_id,
+            "transaction_date": str(date.today()), # <--- WAJIB ADA
             "description": f"Jurnal Penjualan Tunai Order ID: {order_id}",
             "user_id": order.get("user_id") 
         }).execute().data[0]
@@ -159,8 +161,6 @@ async def midtrans_notification(request: Request):
 
         if not update_response.data:
             print(f"ERROR: Gagal memperbarui status order {order_id} di Supabase.")
-            # Jangan raise error 500 ke Midtrans jika update DB gagal tapi notif valid, 
-            # supaya Midtrans tidak mengirim ulang terus menerus. Cukup log saja.
             return {"status": "error", "message": "Supabase update failed but notification received"}
 
         return {"status": "ok", "journal_recorded": journal_recorded}
