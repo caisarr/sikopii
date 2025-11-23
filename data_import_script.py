@@ -87,11 +87,23 @@ def import_coa(file_path):
 # --- 3. LOGIKA IMPORT JURNAL UMUM (Hanya Insert) ---
 def import_general_journal(file_path):
     print(f"\n--- Memulai Import Jurnal Umum (GJ) dari {file_path} ---")
+    
+    # Fungsi pembersihan Rupiah yang definitif
+    def clean_rupiah_number(series):
+        series = series.astype(str).str.strip()
+        # 1. Hapus titik (Ribuan Separator)
+        series = series.str.replace('.', '', regex=False)
+        # 2. Ganti koma ke titik (Decimal Separator)
+        series = series.str.replace(',', '.', regex=False)
+        # 3. Ganti string kosong (yang tersisa setelah cleaning) menjadi NaN, lalu ke float
+        return series.replace('', np.nan).astype(float).fillna(0)
+    
     try:
-        # Perbaikan Indexing Kolom: Mengambil 5 kolom yang diperlukan. Delimiter titik koma (;).
+        # Delimiter titik koma (;).
         df_raw = pd.read_csv(file_path, header=6, delimiter=';', engine='python')
         
         # Slicing Kolom untuk mengambil: [DATE (0), DESCRIPTION (2), REF (3), DEBET (4), CREDIT (5)]
+        # Ini mengatasi error out-of-bounds dan mengambil kolom yang benar.
         df_raw = df_raw.iloc[:, [0, 2, 3, 4, 5]].copy()
         df_raw.columns = ['Date', 'Description', 'REF', 'DEBET', 'CREDIT']
         
@@ -103,17 +115,9 @@ def import_general_journal(file_path):
     df_raw['Description'] = df_raw['Description'].ffill() 
     df_lines = df_raw.dropna(subset=['REF']).copy()
     
-    # ✅ KOREKSI VALUE ERROR UNTUK DEBET
-    df_lines['DEBET'] = df_lines['DEBET'].astype(str).str.strip()
-    df_lines['DEBET'] = df_lines['DEBET'].str.replace('.', '', regex=False) # Hapus titik ribuan
-    df_lines['DEBET'] = df_lines['DEBET'].str.replace(',', '.', regex=False) # Ganti koma desimal ke titik
-    df_lines['DEBET'] = df_lines['DEBET'].replace('', np.nan).astype(float).fillna(0)
-    
-    # ✅ KOREKSI VALUE ERROR UNTUK CREDIT
-    df_lines['CREDIT'] = df_lines['CREDIT'].astype(str).str.strip()
-    df_lines['CREDIT'] = df_lines['CREDIT'].str.replace('.', '', regex=False) # Hapus titik ribuan
-    df_lines['CREDIT'] = df_lines['CREDIT'].str.replace(',', '.', regex=False) # Ganti koma desimal ke titik
-    df_lines['CREDIT'] = df_lines['CREDIT'].replace('', np.nan).astype(float).fillna(0)
+    # ✅ KOREKSI FINAL VALUE ERROR UNTUK DEBET & CREDIT
+    df_lines['DEBET'] = clean_rupiah_number(df_lines['DEBET'])
+    df_lines['CREDIT'] = clean_rupiah_number(df_lines['CREDIT'])
     
     df_lines['full_date_str'] = df_lines['Date'].astype(str) + ' Nov 2025'
     df_lines['transaction_date'] = pd.to_datetime(df_lines['full_date_str'], format='%d %b %Y', errors='coerce').dt.normalize()
