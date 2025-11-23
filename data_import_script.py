@@ -15,22 +15,34 @@ PRODUCT_CODE_TO_ID = {
     "C02": 6,
 }
 
+# --- FUNGSI PEMBERSIH ANGKA PALING AMAN (Element-Wise Cleaner) ---
+def clean_rupiah_number_element(val):
+    """
+    Membersihkan string Rupiah Indonesia/Eropa (e.g., 13.600.000) menjadi float.
+    Fungsi ini diterapkan per elemen untuk robustess maksimum.
+    """
+    val = str(val).strip()
+    if not val:
+        return 0.0
+    
+    # 1. Hapus semua spasi dan tanda kurung (seringkali negatif)
+    val = val.replace(' ', '').replace('(', '').replace(')', '')
 
-# --- FUNGSI PEMBERSIH ANGKA PALING AMAN (HANYA MENGHILANGKAN RIBUAN) ---
-def clean_rupiah_number_series(series):
-    """
-    Membersihkan series Rupiah. Menghapus semua karakter non-angka dan titik ribuan.
-    """
-    series = series.astype(str).str.strip()
+    # 2. Asumsi format Indonesia: Titik adalah ribuan, Koma adalah desimal.
+    if ',' in val:
+        # Menghapus titik (ribuan separator)
+        val = val.replace('.', '')
+        # Mengganti koma (desimal separator) ke titik
+        val = val.replace(',', '.')
+    else:
+        # Jika tidak ada koma, titik yang ada pasti pemisah ribuan. Hapus semua titik.
+        val = val.replace('.', '')
     
-    # Menghapus TITIK (ribuan separator) - Ini adalah penyebab utama error '13.600.000'.
-    series = series.str.replace('.', '', regex=False)
-    
-    # Mengganti koma (desimal separator) ke titik (jika ada)
-    series = series.str.replace(',', '.', regex=False)
-    
-    # Mengonversi dan mengisi nilai kosong
-    return series.replace('', np.nan).astype(float).fillna(0)
+    # 3. Konversi ke float. Jika gagal (misalnya string sisa cleaning masih aneh), return 0.0
+    try:
+        return float(val)
+    except ValueError:
+        return 0.0
 
 
 # --- 1. FUNGSI PEMBERSIHAN DATA (URUTAN YANG BENAR) ---
@@ -121,8 +133,8 @@ def import_general_journal(file_path):
     df_lines = df_raw.dropna(subset=['REF']).copy()
     
     # ✅ KOREKSI FINAL VALUE ERROR UNTUK DEBET & CREDIT
-    df_lines['DEBET'] = clean_rupiah_number_series(df_lines['DEBET'])
-    df_lines['CREDIT'] = clean_rupiah_number_series(df_lines['CREDIT'])
+    df_lines['DEBET'] = df_lines['DEBET'].apply(clean_rupiah_number_element)
+    df_lines['CREDIT'] = df_lines['CREDIT'].apply(clean_rupiah_number_element)
     
     df_lines['full_date_str'] = df_lines['Date'].astype(str) + ' Nov 2025'
     df_lines['transaction_date'] = pd.to_datetime(df_lines['full_date_str'], format='%d %b %Y', errors='coerce').dt.normalize()
@@ -193,17 +205,12 @@ def import_inventory_movements(file_path):
                 product_id = PRODUCT_CODE_TO_ID.get(current_product_code)
                 if not product_id: continue 
 
-                # Parsing angka Rupiah (menggunakan fungsi clean_rupiah_number untuk konsistensi)
-                def parse_rupiah_number(val):
-                    # Membersihkan Rp, titik ribuan, dan mengganti koma desimal ke titik
-                    val = str(val).replace('Rp', '').replace('.', '', regex=False).replace(',', '.', 1).strip()
-                    return pd.to_numeric(val, errors='coerce') or 0
-
+                # Parsing angka Rupiah (menggunakan fungsi aman)
                 qty_in = pd.to_numeric(row_str.iloc[4], errors='coerce', downcast='integer') or 0
-                cost_in = parse_rupiah_number(row_str.iloc[5]) 
+                cost_in = clean_rupiah_number_element(row_str.iloc[5]) 
                 
                 qty_out = pd.to_numeric(row_str.iloc[8], errors='coerce', downcast='integer') or 0
-                cost_out = parse_rupiah_number(row_str.iloc[9])
+                cost_out = clean_rupiah_number_element(row_str.iloc[9])
 
                 if qty_in > 0 and cost_in > 0:
                     movements_to_insert.append({
