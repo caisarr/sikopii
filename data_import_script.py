@@ -3,8 +3,6 @@ from supabase_client import supabase
 from datetime import datetime
 import numpy as np
 
-# PENTING: Skrip ini akan menghapus data lama di tabel-tabel utama Supabase Anda.
-
 # ✅ MAPPING ID PRODUK BERDASARKAN INPUT ANDA
 PRODUCT_CODE_TO_ID = {
     "A01": 1, 
@@ -16,7 +14,31 @@ PRODUCT_CODE_TO_ID = {
 }
 
 
-# --- 1. LOGIKA INFERENSI COA ---
+# --- 1. FUNGSI PEMBERSIHAN DATA (FIX API ERROR) ---
+def clear_all_data():
+    """Menghapus data dari tabel-tabel anak terlebih dahulu untuk menghindari Foreign Key Error."""
+    print("\n--- Membersihkan Data Database (Wajib) ---")
+    
+    # 1. Hapus data Inventory Movements (Tabel Paling Bawah)
+    print("Aksi: Membersihkan inventory_movements...")
+    supabase.table("inventory_movements").delete().neq("id", 0).execute() 
+    
+    # 2. Hapus data Journal Lines (Tabel Anak dari COA & Entries)
+    print("Aksi: Membersihkan journal_lines...")
+    supabase.table("journal_lines").delete().neq("id", 0).execute() 
+    
+    # 3. Hapus data Journal Entries (Tabel Induk dari Lines)
+    print("Aksi: Membersihkan journal_entries...")
+    supabase.table("journal_entries").delete().neq("id", 0).execute() 
+    
+    # 4. Hapus data Chart of Accounts (Tabel Induk - Sekarang Aman Dihapus)
+    print("Aksi: Membersihkan chart_of_accounts...")
+    supabase.table("chart_of_accounts").delete().neq("account_code", "DUMMY").execute() 
+    
+    print("Pembersihan data historis Selesai.")
+
+
+# --- 2. LOGIKA INFERENSI COA (Tidak Berubah) ---
 def infer_coa_details(account_code):
     """Menentukan tipe akun dan saldo normal dari kode akun."""
     code_prefix = str(account_code).split('-')[0]
@@ -30,7 +52,7 @@ def infer_coa_details(account_code):
     elif code_prefix in ['5', '6', '9']: return "Expense", "Debit"
     return "Other", "Debit"
 
-# --- 2. LOGIKA IMPORT COA ---
+# --- 3. LOGIKA IMPORT COA (Hanya Insert) ---
 def import_coa(file_path):
     print(f"\n--- Memulai Import Chart of Accounts (COA) dari {file_path} ---")
     try:
@@ -45,14 +67,11 @@ def import_coa(file_path):
 
     df['account_type'], df['normal_balance'] = zip(*df['account_code'].apply(infer_coa_details))
     data_to_insert = df[['account_code', 'account_name', 'account_type', 'normal_balance']].to_dict('records')
-
-    print("Aksi: Menghapus data Chart of Accounts lama...")
-    supabase.table("chart_of_accounts").delete().neq("account_code", "DUMMY").execute() 
     
     response = supabase.table("chart_of_accounts").insert(data_to_insert).execute()
     print(f"Import COA Selesai. Total {len(response.data)} akun dimasukkan.")
 
-# --- 3. LOGIKA IMPORT JURNAL UMUM (GJ) ---
+# --- 4. LOGIKA IMPORT JURNAL UMUM (Hanya Insert) ---
 def import_general_journal(file_path):
     print(f"\n--- Memulai Import Jurnal Umum (GJ) dari {file_path} ---")
     try:
@@ -70,10 +89,6 @@ def import_general_journal(file_path):
     df_lines['full_date_str'] = df_lines['Date'].astype(str) + ' Nov 2025'
     df_lines['transaction_date'] = pd.to_datetime(df_lines['full_date_str'], format='%d %b %Y', errors='coerce').dt.normalize()
 
-    print("Aksi: Menghapus data Jurnal Umum lama...")
-    supabase.table("journal_lines").delete().neq("id", 0).execute() 
-    supabase.table("journal_entries").delete().neq("id", 0).execute() 
-    
     journal_groups = df_lines.groupby(['transaction_date', 'Description'], dropna=True)
     lines_to_insert = []
     
@@ -100,21 +115,20 @@ def import_general_journal(file_path):
         print("Tidak ada baris jurnal yang dimasukkan.")
     print("Import Jurnal Umum Selesai.")
 
-# --- 4. LOGIKA IMPORT INVENTORY MOVEMENTS (Kartu Persediaan) ---
+# --- 5. LOGIKA IMPORT INVENTORY MOVEMENTS (Kartu Persediaan) ---
 def import_inventory_movements(file_path):
     print("\n--- Memulai Import Data Unit Kartu Persediaan ---")
     
     if not PRODUCT_CODE_TO_ID:
-        print("GAGAL: PRODUCT_CODE_TO_ID kosong. Silakan isi mapping ID produk di skrip.")
+        print("GAGAL: PRODUCT_CODE_TO_ID kosong.")
         return
 
     try:
-        # Membaca data mentah. Kita akan memproses dari baris ke-6 (indeks 5) karena header detailnya ada di sana.
-        # Menggunakan delimiter koma (,) karena diasumsikan file di-save dengan delimiter koma.
+        # Membaca data mentah. Kita akan memproses dari baris ke-6 (indeks 5).
         df_raw = pd.read_csv(file_path, header=None, skiprows=5, delimiter=',') 
         
     except Exception as e:
-        print(f"ERROR membaca file INVENTORY: {e}. Silakan pastikan file di-save dengan delimiter KOMA (,) di Excel.")
+        print(f"ERROR membaca file INVENTORY: {e}. Coba pastikan file di-save dengan delimiter KOMA (,) di Excel.")
         return
     
     try:
@@ -127,19 +141,16 @@ def import_inventory_movements(file_path):
             
             # Mendeteksi Awal Blok Produk dan Kode
             if 'ITEM' in row_str.iloc[0] and 'Kode' in row_str.iloc[13]:
-                # Ambil kode produk dari kolom ke-14 (indeks 13)
-                current_product_code = row_str.iloc[14].strip() # Misal: A01
+                current_product_code = row_str.iloc[14].strip() 
                 continue
             
-            # Jika Kode Produk sudah ditemukan, proses baris transaksi
             if current_product_code and row_str.iloc[0].strip().startswith('2025'):
                 
-                # Parsing Tanggal (kolom 0)
                 try:
                     date_part = row_str.iloc[0].strip()
                     movement_date = pd.to_datetime(date_part, errors='coerce').strftime('%Y-%m-%d')
                 except:
-                    continue # Skip baris jika tanggal tidak valid
+                    continue 
 
                 product_id = PRODUCT_CODE_TO_ID.get(current_product_code)
                 if not product_id: continue 
@@ -169,14 +180,10 @@ def import_inventory_movements(file_path):
                         "product_id": product_id,
                         "movement_date": movement_date,
                         "movement_type": "ISSUE", 
-                        "quantity_change": -qty_out, # Negatif untuk keluar
+                        "quantity_change": -qty_out, 
                         "unit_cost": cost_out,
                         "reference_id": f"INVEN-H-{index}",
                     })
-        
-        # Aksi: Hapus data lama dan masukkan data unit baru
-        print("Aksi: Menghapus data Inventory Movements lama...")
-        supabase.table("inventory_movements").delete().neq("id", 0).execute() 
         
         if movements_to_insert:
             supabase.table("inventory_movements").insert(movements_to_insert).execute()
@@ -191,13 +198,12 @@ def import_inventory_movements(file_path):
 # --- EKSEKUSI UTAMA ---
 if __name__ == "__main__":
     
-    # 1. Import Chart of Accounts
+    # 1. Clear semua tabel dalam urutan yang benar (FIX API ERROR)
+    clear_all_data()
+    
+    # 2. Import data baru
     import_coa("SIKLUS EXCEL.xlsx - AKUN.csv")
-    
-    # 2. Import General Journal Transactions
     import_general_journal("SIKLUS EXCEL.xlsx - GJ.csv")
-    
-    # 3. Import Kartu Persediaan (mengisi data unit historis)
     import_inventory_movements("SIKLUS EXCEL.xlsx - INVENTORY.csv")
     
     print("\n\n*** DATA SEEDING SELESAI. Silakan jalankan skrip ini di terminal remote Anda. ***")
