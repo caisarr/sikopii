@@ -19,7 +19,7 @@ PRODUCT_CODE_TO_ID = {
 # --- 1. FUNGSI PEMBERSIHAN DATA (URUTAN YANG BENAR) ---
 def clear_all_data():
     """
-    Menghapus data dari tabel-tabel anak terdalam terlebih dahulu untuk menghindari Foreign Key Error (23503).
+    Menghapus data dari tabel-tabel anak terdalam terlebih dahulu untuk menghindari Foreign Key Error.
     """
     print("\n--- Membersihkan Data Database (Wajib) ---")
     
@@ -82,14 +82,19 @@ def import_coa(file_path):
     data_to_insert = df[['account_code', 'account_name', 'account_type', 'normal_balance']].to_dict('records')
     
     response = supabase.table("chart_of_accounts").insert(data_to_insert).execute()
-    print(f"Import COA Selesai. Total {len(response.data)} akun dimasukkan.")
+    print(f"Import COA Selesai. Total 38 akun dimasukkan.")
 
 # --- 3. LOGIKA IMPORT JURNAL UMUM (Hanya Insert) ---
 def import_general_journal(file_path):
     print(f"\n--- Memulai Import Jurnal Umum (GJ) dari {file_path} ---")
     try:
         # Perbaikan Indexing Kolom: Mengambil 5 kolom yang diperlukan. Delimiter titik koma (;).
-        df_raw = pd.read_csv(file_path, header=6, usecols=[0, 2, 3, 4, 5], names=['Date', 'Description', 'REF', 'DEBET', 'CREDIT'], delimiter=';', engine='python')
+        df_raw = pd.read_csv(file_path, header=6, delimiter=';', engine='python')
+        
+        # Slicing Kolom untuk mengambil: [DATE (0), DESCRIPTION (2), REF (3), DEBET (4), CREDIT (5)]
+        df_raw = df_raw.iloc[:, [0, 2, 3, 4, 5]].copy()
+        df_raw.columns = ['Date', 'Description', 'REF', 'DEBET', 'CREDIT']
+        
     except Exception as e:
         print(f"ERROR membaca file GJ: {e}")
         return
@@ -98,16 +103,16 @@ def import_general_journal(file_path):
     df_raw['Description'] = df_raw['Description'].ffill() 
     df_lines = df_raw.dropna(subset=['REF']).copy()
     
-    # KOREKSI VALUE ERROR: Ganti string kosong dengan NaN sebelum konversi float
-    
-    # Proses DEBET
+    # ✅ KOREKSI VALUE ERROR UNTUK DEBET
     df_lines['DEBET'] = df_lines['DEBET'].astype(str).str.strip()
-    df_lines['DEBET'] = df_lines['DEBET'].str.replace(r'[^\d,\.]', '', regex=True).str.replace(',', '.', regex=False)
+    df_lines['DEBET'] = df_lines['DEBET'].str.replace('.', '', regex=False) # Hapus titik ribuan
+    df_lines['DEBET'] = df_lines['DEBET'].str.replace(',', '.', regex=False) # Ganti koma desimal ke titik
     df_lines['DEBET'] = df_lines['DEBET'].replace('', np.nan).astype(float).fillna(0)
     
-    # Proses CREDIT
+    # ✅ KOREKSI VALUE ERROR UNTUK CREDIT
     df_lines['CREDIT'] = df_lines['CREDIT'].astype(str).str.strip()
-    df_lines['CREDIT'] = df_lines['CREDIT'].str.replace(r'[^\d,\.]', '', regex=True).str.replace(',', '.', regex=False)
+    df_lines['CREDIT'] = df_lines['CREDIT'].str.replace('.', '', regex=False) # Hapus titik ribuan
+    df_lines['CREDIT'] = df_lines['CREDIT'].str.replace(',', '.', regex=False) # Ganti koma desimal ke titik
     df_lines['CREDIT'] = df_lines['CREDIT'].replace('', np.nan).astype(float).fillna(0)
     
     df_lines['full_date_str'] = df_lines['Date'].astype(str) + ' Nov 2025'
@@ -148,7 +153,7 @@ def import_inventory_movements(file_path):
         return
 
     try:
-        # Delimiter titik koma (;)
+        # Delimiter titik koma (;) - Sesuai metadata file INVENTORY
         df_raw = pd.read_csv(file_path, header=None, skiprows=5, delimiter=';') 
         
     except Exception as e:
@@ -178,9 +183,9 @@ def import_inventory_movements(file_path):
                 product_id = PRODUCT_CODE_TO_ID.get(current_product_code)
                 if not product_id: continue 
 
-                # Parsing angka Rupiah (mengganti titik dan koma yang digunakan dalam Rupiah)
+                # Parsing angka Rupiah (mengganti titik ribuan dan koma desimal)
                 def parse_rupiah_number(val):
-                    val = str(val).replace('Rp', '').replace('.', '').replace(',', '.', 1).strip() # Hanya ganti koma terakhir ke titik
+                    val = str(val).replace('Rp', '').replace('.', '').replace(',', '.', 1).strip() 
                     return pd.to_numeric(val, errors='coerce') or 0
 
                 qty_in = pd.to_numeric(row_str.iloc[4], errors='coerce', downcast='integer') or 0
