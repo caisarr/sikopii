@@ -170,4 +170,64 @@ def import_inventory_movements(file_path):
             if current_product_code and row_str.iloc[0].strip().startswith('2025'):
                 
                 try:
-                    date_part = row_str.iloc[0].strip
+                    date_part = row_str.iloc[0].strip()
+                    movement_date = pd.to_datetime(date_part, errors='coerce').strftime('%Y-%m-%d')
+                except:
+                    continue 
+
+                product_id = PRODUCT_CODE_TO_ID.get(current_product_code)
+                if not product_id: continue 
+
+                # Parsing angka Rupiah (mengganti titik dan koma yang digunakan dalam Rupiah)
+                def parse_rupiah_number(val):
+                    val = str(val).replace('Rp', '').replace('.', '').replace(',', '.', 1).strip() # Hanya ganti koma terakhir ke titik
+                    return pd.to_numeric(val, errors='coerce') or 0
+
+                qty_in = pd.to_numeric(row_str.iloc[4], errors='coerce', downcast='integer') or 0
+                cost_in = parse_rupiah_number(row_str.iloc[5]) 
+                
+                qty_out = pd.to_numeric(row_str.iloc[8], errors='coerce', downcast='integer') or 0
+                cost_out = parse_rupiah_number(row_str.iloc[9])
+
+                if qty_in > 0 and cost_in > 0:
+                    movements_to_insert.append({
+                        "product_id": product_id,
+                        "movement_date": movement_date,
+                        "movement_type": "RECEIPT", 
+                        "quantity_change": qty_in, 
+                        "unit_cost": cost_in,
+                        "reference_id": f"INVEN-H-{index}", 
+                    })
+
+                if qty_out > 0 and cost_out > 0:
+                    movements_to_insert.append({
+                        "product_id": product_id,
+                        "movement_date": movement_date,
+                        "movement_type": "ISSUE", 
+                        "quantity_change": -qty_out, 
+                        "unit_cost": cost_out,
+                        "reference_id": f"INVEN-H-{index}",
+                    })
+        
+        if movements_to_insert:
+            supabase.table("inventory_movements").insert(movements_to_insert).execute()
+            print(f"Import Kartu Persediaan Selesai. Total {len(movements_to_insert)} pergerakan unit dimasukkan.")
+        else:
+            print("Peringatan: Tidak ada data pergerakan unit yang berhasil diproses.")
+
+    except Exception as e:
+        print(f"FATAL ERROR saat memproses Kartu Persediaan: {e}")
+
+
+# --- EKSEKUSI UTAMA ---
+if __name__ == "__main__":
+    
+    # 1. Clear semua tabel dalam urutan yang benar (AKSI FIX)
+    clear_all_data()
+    
+    # 2. Import data baru
+    import_coa("SIKLUS EXCEL.xlsx - AKUN.csv")
+    import_general_journal("SIKLUS EXCEL.xlsx - GJ.csv")
+    import_inventory_movements("SIKLUS EXCEL.xlsx - INVENTORY.csv")
+    
+    print("\n\n*** DATA SEEDING SELESAI. Silakan jalankan skrip ini di terminal remote Anda. ***")
