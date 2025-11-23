@@ -35,27 +35,19 @@ def clean_rupiah_number_element(val):
     except ValueError:
         return 0.0
 
-# --- 1. FUNGSI PEMBERSIHAN DATA (FIXED) ---
+# --- 1. FUNGSI PEMBERSIHAN DATA ---
 def clear_all_data():
     print("\n--- Membersihkan Data Database ---")
-    # Urutan penghapusan dari anak ke induk
     tables = ["inventory_movements", "journal_lines", "order_items", "journal_entries", "orders", "products", "chart_of_accounts"]
-    
     for table in tables:
         print(f"Membersihkan {table}...")
         try:
-            # Logika pembedaan kolom kunci
             if table == 'chart_of_accounts':
-                # COA menggunakan account_code, bukan id
                 supabase.table(table).delete().neq("account_code", "DUMMY").execute()
             else:
-                # Tabel lain menggunakan id
                 supabase.table(table).delete().neq("id", 0).execute()
         except Exception as e:
-            print(f"Gagal membersihkan {table}: {e}")
-            # Lanjut ke tabel berikutnya meskipun satu gagal (opsional, tapi lebih aman berhenti jika fatal)
-            raise e 
-            
+            print(f"Info: Gagal membersihkan {table} (mungkin sudah kosong): {e}")
     print("Selesai membersihkan.")
 
 # --- 2. IMPORT COA ---
@@ -70,9 +62,15 @@ def infer_coa_details(account_code):
 def import_coa(file_path):
     print(f"\n--- Import COA: {file_path} ---")
     try:
-        df = pd.read_csv(file_path, header=4, usecols=[0, 1], names=['account_code', 'account_name'], skiprows=lambda x: x < 5 and x != 4, delimiter=';')
+        # Pakai dtype=str untuk memastikan kode akun dibaca sebagai text
+        df = pd.read_csv(file_path, header=4, usecols=[0, 1], names=['account_code', 'account_name'], 
+                         skiprows=lambda x: x < 5 and x != 4, delimiter=';', dtype=str)
+        
         df = df.dropna(subset=['account_code']).copy()
         df['account_code'] = df['account_code'].astype(str).str.strip()
+        df['account_name'] = df['account_name'].astype(str).str.strip()
+        
+        # Filter hanya yang punya tanda '-' (format standar akun Anda)
         df = df[df['account_code'].str.contains(r'-')].copy()
         
         df['account_type'], df['normal_balance'] = zip(*df['account_code'].apply(infer_coa_details))
@@ -83,7 +81,6 @@ def import_coa(file_path):
             print(f"Berhasil mengimpor {len(data)} akun.")
         else:
             print("Tidak ada data akun yang ditemukan.")
-            
     except Exception as e:
         print(f"Gagal import COA: {e}")
 
@@ -91,7 +88,12 @@ def import_coa(file_path):
 def import_general_journal(file_path):
     print(f"\n--- Import GJ: {file_path} ---")
     try:
-        df_raw = pd.read_csv(file_path, header=5, delimiter=';', engine='python')
+        # Ambil daftar akun valid dari database untuk validasi
+        valid_accounts_resp = supabase.table("chart_of_accounts").select("account_code").execute()
+        valid_account_codes = set(item['account_code'] for item in valid_accounts_resp.data)
+        print(f"Validasi: Ditemukan {len(valid_account_codes)} akun valid di database.")
+
+        df_raw = pd.read_csv(file_path, header=5, delimiter=';', engine='python', dtype=str)
         
         # Ambil kolom 1, 2, 3, 4, 5 (Day, Desc, Ref, Debet, Credit)
         df = df_raw.iloc[:, [1, 2, 3, 4, 5]].copy() 
@@ -101,13 +103,16 @@ def import_general_journal(file_path):
         df['Description'] = df['Description'].ffill()
         
         df = df.dropna(subset=['REF']).copy()
+        df['REF'] = df['REF'].astype(str).str.strip()
         
+        # Bersihkan Angka
         df['DEBET'] = df['DEBET'].apply(clean_rupiah_number_element)
         df['CREDIT'] = df['CREDIT'].apply(clean_rupiah_number_element)
         
         def parse_day(d):
             try:
-                d_int = int(float(d))
+                d_clean = str(d).split('.')[0] # Handle "1.0" string from excel
+                d_int = int(d_clean)
                 return date(DEFAULT_YEAR, DEFAULT_MONTH, d_int).isoformat()
             except:
                 return date(DEFAULT_YEAR, DEFAULT_MONTH, 1).isoformat()
@@ -118,11 +123,13 @@ def import_general_journal(file_path):
         
         entries_count = 0
         lines_count = 0
+        skipped_lines = 0
         
         for (tx_date, desc), group in grouped:
             if group['DEBET'].sum() == 0 and group['CREDIT'].sum() == 0:
                 continue
-                
+            
+            # Buat Header
             entry = supabase.table("journal_entries").insert({
                 "transaction_date": tx_date,
                 "description": desc
@@ -132,12 +139,20 @@ def import_general_journal(file_path):
             
             lines = []
             for _, row in group.iterrows():
+                acc_code = row['REF']
+                
+                # CEK VALIDITAS AKUN
+                if acc_code not in valid_account_codes:
+                    print(f"WARNING: Akun {acc_code} tidak ditemukan di COA. Baris dilewati.")
+                    skipped_lines += 1
+                    continue
+
                 if row['DEBET'] > 0 or row['CREDIT'] > 0:
                     lines.append({
                         "journal_id": journal_id,
-                        "account_code": row['REF'].strip(),
-                        "debit_amount": row['DEBET'],
-                        "credit_amount": row['CREDIT']
+                        "account_code": acc_code,
+                        "debit_amount": float(row['DEBET']),
+                        "credit_amount": float(row['CREDIT'])
                     })
             
             if lines:
@@ -145,6 +160,8 @@ def import_general_journal(file_path):
                 lines_count += len(lines)
                 
         print(f"Berhasil mengimpor {entries_count} transaksi jurnal dan {lines_count} baris detail.")
+        if skipped_lines > 0:
+            print(f"PERHATIAN: {skipped_lines} baris dilewati karena Kode Akun tidak ditemukan di database.")
         
     except Exception as e:
         print(f"Gagal import GJ: {e}")
@@ -157,97 +174,71 @@ def import_inventory_movements(file_path):
         return
 
     try:
-        df_raw = pd.read_csv(file_path, header=None, skiprows=5, delimiter=';')
+        df_raw = pd.read_csv(file_path, header=None, skiprows=5, delimiter=';', dtype=str)
         movements = []
         
-        for idx, row in df_raw.iterrows():
-            row_str = row.astype(str)
-            
-            # Cari Kode Produk
-            current_prod_id = None
-            if 'ITEM' in row_str.iloc[1]: 
-                for i, val in enumerate(row_str):
-                    if "Kode" in val:
-                        code_cand = row_str.iloc[i+1].strip()
-                        current_prod_id = PRODUCT_CODE_TO_ID.get(code_cand)
-                        break
-                # Simpan state produk untuk baris berikutnya jika struktur memungkinkan, 
-                # TAPI struktur file ini sepertinya per-block. 
-                # Kode di atas hanya mendeteksi baris header.
-                # Kita butuh state machine sederhana.
-                continue 
-            
-            # Logic state machine sederhana:
-            # Jika baris ini bukan header item, kita perlu tahu produk apa yang sedang diproses.
-            # Karena iterasi baris demi baris, kita harus menyimpan current_prod_id di luar loop atau mendeteksi ulang.
-            # KOREKSI: Menggunakan variabel state di luar loop.
-            pass # Placeholder, lihat implementasi bawah.
-
-        # IMPLEMENTASI ULANG LOOP DENGAN STATE
-        current_active_prod_id = None
+        # Loop manual sederhana
+        current_prod_id = None
         
         for idx, row in df_raw.iterrows():
-            row_str = row.astype(str)
+            row_str = row.fillna('').astype(str)
             
-            # 1. Deteksi Header Produk Baru
-            if 'ITEM' in str(row.values):
-                for i, val in enumerate(row_str):
-                    if "Kode" in str(val):
-                        try:
-                            code_cand = row_str.iloc[i+1].strip()
-                            current_active_prod_id = PRODUCT_CODE_TO_ID.get(code_cand)
-                        except:
-                            pass
-                continue # Pindah ke baris berikutnya
+            # Deteksi Header Item (Kode)
+            if 'Kode' in row_str.iloc[13]: # Cek kolom N (index 13)
+                 code_cand = row_str.iloc[14].strip()
+                 current_prod_id = PRODUCT_CODE_TO_ID.get(code_cand)
+                 continue
             
-            # 2. Proses Data Transaksi (jika ada produk aktif)
-            # Cek kolom Day (index 2)
-            day_val = str(row_str.iloc[2]).strip()
+            # Validasi baris data: Kolom 2 (Day) adalah angka
+            day_val = row_str.iloc[2].strip()
             
-            if current_active_prod_id and day_val.replace('.','',1).isdigit(): 
+            if current_prod_id and day_val.replace('.','',1).isdigit():
                 try:
                     day = int(float(day_val))
                     tx_date = date(DEFAULT_YEAR, DEFAULT_MONTH, day).isoformat()
                     
-                    # Parsing Angka
                     qty_in = pd.to_numeric(row_str.iloc[4], errors='coerce') or 0
                     cost_in = clean_rupiah_number_element(row_str.iloc[5])
                     qty_out = pd.to_numeric(row_str.iloc[7], errors='coerce') or 0 
-                    cost_out = clean_rupiah_number_element(row_str.iloc[8]) 
+                    cost_out = clean_rupiah_number_element(row_str.iloc[8])
                     
+                    # PENTING: Konversi ke tipe native Python (int/float) untuk JSON Serialization
                     if qty_in > 0:
                         movements.append({
-                            "product_id": current_active_prod_id, "movement_date": tx_date,
-                            "movement_type": "RECEIPT", "quantity_change": qty_in,
-                            "unit_cost": cost_in, "reference_id": f"IMP-IN-{idx}"
+                            "product_id": int(current_prod_id),
+                            "movement_date": tx_date,
+                            "movement_type": "RECEIPT", 
+                            "quantity_change": int(qty_in),
+                            "unit_cost": float(cost_in),
+                            "reference_id": f"IMP-IN-{idx}"
                         })
                     
                     if qty_out > 0:
                         movements.append({
-                            "product_id": current_active_prod_id, "movement_date": tx_date,
-                            "movement_type": "ISSUE", "quantity_change": -qty_out,
-                            "unit_cost": cost_out, "reference_id": f"IMP-OUT-{idx}"
+                            "product_id": int(current_prod_id),
+                            "movement_date": tx_date,
+                            "movement_type": "ISSUE", 
+                            "quantity_change": int(-qty_out), # Negatif
+                            "unit_cost": float(cost_out),
+                            "reference_id": f"IMP-OUT-{idx}"
                         })
-                except:
+                except Exception as e:
+                    # print(f"Skip row {idx}: {e}")
                     continue
 
         if movements:
             supabase.table("inventory_movements").insert(movements).execute()
             print(f"Berhasil mengimpor {len(movements)} pergerakan inventori.")
         else:
-            print("Tidak ada data inventori valid yang ditemukan.")
+            print("Tidak ada data inventori yang ditemukan.")
             
     except Exception as e:
         print(f"Gagal import Inventory: {e}")
 
 # --- MAIN ---
 if __name__ == "__main__":
-    # Jalankan urutan
-    try:
-        clear_all_data()
-        import_coa("SIKLUS EXCEL.xlsx - AKUN.csv")
-        import_general_journal("SIKLUS EXCEL.xlsx - GJ.csv")
-        import_inventory_movements("SIKLUS EXCEL.xlsx - INVENTORY.csv")
-        print("\n*** DATA SEEDING SELESAI ***")
-    except Exception as main_e:
-        print(f"\nTERJADI ERROR UTAMA: {main_e}")
+    clear_all_data()
+    import_coa("SIKLUS EXCEL.xlsx - AKUN.csv")
+    import_general_journal("SIKLUS EXCEL.xlsx - GJ.csv")
+    import_inventory_movements("SIKLUS EXCEL.xlsx - INVENTORY.csv")
+    print("\n*** SELESAI ***")
