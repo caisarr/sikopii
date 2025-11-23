@@ -60,6 +60,7 @@ def fetch_all_accounting_data():
         df_entries['transaction_date'] = pd.to_datetime(df_entries['transaction_date'], errors='coerce')
         if df_entries['transaction_date'].dt.tz is not None:
              df_entries['transaction_date'] = df_entries['transaction_date'].dt.tz_localize(None)
+        # Normalisasi ke tengah malam, yang efektif menghilangkan waktu secara internal
         df_entries['transaction_date'] = df_entries['transaction_date'].dt.normalize()
         
         return {
@@ -106,6 +107,7 @@ def get_base_data_and_filter(start_date, end_date):
         empty_merged = pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount'])
         return empty_merged, df_coa, df_movements
 
+    # Merge menggunakan suffix agar kolom description dari entry terpisah dengan line
     df_journal_merged = df_lines.merge(df_journal_entries_final, left_on='journal_id', right_on='id', suffixes=('_line', '_entry'))
     df_journal_merged = df_journal_merged.merge(df_coa, on='account_code')
     
@@ -147,6 +149,170 @@ def calculate_trial_balance(df_journal, df_coa):
     df_tb.columns = ['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Debit', 'Kredit', 'Tipe_Num']
     
     return df_tb
+
+# --- FUNGSI BARU: JURNAL UMUM ---
+def create_general_journal_report(df_journal):
+    """
+    Menampilkan Jurnal Umum (General Journal) yang digabungkan dan diformat.
+    """
+    if df_journal.empty:
+        return pd.DataFrame(columns=['Tanggal', 'Kode Akun', 'Nama Akun', 'Deskripsi Transaksi', 'Debit', 'Kredit'])
+        
+    # Urutkan berdasarkan tanggal, ID Jurnal, dan Debit (untuk memastikan Debit selalu di atas Kredit)
+    df_ju = df_journal.sort_values(by=['transaction_date', 'journal_id', 'debit_amount'], ascending=[True, True, False]).copy()
+    
+    # NEW FIX: Konversi transaction_date ke string YYYY-MM-DD
+    df_ju['Tanggal'] = df_ju['transaction_date'].dt.strftime('%Y-%m-%d')
+    
+    # Pilih dan atur ulang kolom. description_entry adalah deskripsi transaksi utama.
+    df_ju = df_ju[[
+        'Tanggal', 'description_entry', 'account_code', 'account_name', 
+        'debit_amount', 'credit_amount', 'journal_id'
+    ]].copy()
+    
+    df_ju.columns = [
+        'Tanggal', 'Deskripsi Transaksi', 'Kode Akun', 'Nama Akun', 
+        'Debit', 'Kredit', 'Ref Jurnal'
+    ]
+
+    # Format Nama Akun agar akun Kredit indentasi
+    def format_account_name(row):
+        account_name = row['Nama Akun']
+        debit = row['Debit']
+        
+        if debit == 0:
+            # Ini adalah baris kredit, lakukan indentasi (karakter spasi)
+            return f"       {account_name}"
+        else:
+            # Ini adalah baris debit
+            return account_name
+
+    df_ju['Nama Akun'] = df_ju.apply(format_account_name, axis=1)
+
+    # Hapus duplikasi Tanggal dan Deskripsi Transaksi (hanya tampil di baris pertama entri jurnal)
+    df_ju['Tanggal'] = df_ju.groupby('Ref Jurnal', group_keys=False)['Tanggal'].apply(lambda x: x if x.index.isin([x.index[0]]) else '')
+    df_ju['Deskripsi Transaksi'] = df_ju.groupby('Ref Jurnal', group_keys=False)['Deskripsi Transaksi'].apply(lambda x: x if x.index.isin([x.index[0]]) else '')
+
+    # Pilih kolom akhir untuk tampilan
+    df_ju_final = df_ju[[
+        'Tanggal', 'Kode Akun', 'Nama Akun', 'Deskripsi Transaksi',
+        'Debit', 'Kredit'
+    ]]
+    
+    return df_ju_final.reset_index(drop=True)
+
+# --- FUNGSI BARU: BUKU BESAR UMUM ---
+def create_general_ledger_report(df_journal, df_coa):
+    """
+    Menghitung Buku Besar (General Ledger) dengan saldo berjalan (running balance)
+    untuk setiap akun.
+    """
+    if df_journal.empty:
+        return pd.DataFrame(columns=['Kode Akun', 'Nama Akun', 'Tanggal', 'Keterangan', 'Ref', 'Debit', 'Kredit', 'Saldo Debet', 'Saldo Kredit'])
+
+    df_gl_data = []
+
+    # Iterate over unique account codes
+    for account_code, group in df_journal.groupby('account_code'):
+        # Get account info
+        coa_info = df_coa[df_coa['account_code'] == account_code].iloc[0]
+        account_name = coa_info['account_name']
+        normal_balance = coa_info['normal_balance']
+        
+        # Sort transactions chronologically
+        group = group.sort_values(by=['transaction_date', 'journal_id', 'debit_amount'], ascending=[True, True, False]).copy()
+
+        # Initialize running balance
+        running_balance = 0.0
+        
+        # Tambahkan baris Saldo Awal (jika ada transaksi Saldo Awal)
+        initial_balance_row = group[group['description_entry'] == 'Pencatatan Saldo Awal dari NS AWAL.csv'].copy()
+        
+        if not initial_balance_row.empty:
+            # Ambil hanya satu baris untuk saldo awal
+            initial_balance_row = initial_balance_row.iloc[0]
+            
+            # Hitung saldo awal berdasarkan Saldo Debet - Saldo Kredit
+            initial_net_change = initial_balance_row['debit_amount'] - initial_balance_row['credit_amount']
+            
+            # Tentukan nilai awal saldo berjalan
+            if normal_balance == 'Debit':
+                running_balance = initial_net_change
+            else: # Credit
+                running_balance = -initial_net_change
+            
+            
+            # Catat baris Saldo Awal
+            df_gl_data.append({
+                'Kode Akun': account_code,
+                'Nama Akun': account_name,
+                'Tanggal': initial_balance_row['transaction_date'],
+                'Keterangan': 'Saldo Awal',
+                'Ref': initial_balance_row['journal_id'],
+                'Debit': initial_balance_row['debit_amount'],
+                'Kredit': initial_balance_row['credit_amount'],
+                'Saldo': running_balance,
+            })
+            
+            # Filter baris transaksi GJ selain saldo awal
+            group = group[group['description_entry'] != 'Pencatatan Saldo Awal dari NS AWAL.csv']
+
+
+        for index, row in group.iterrows():
+            debit = row['debit_amount']
+            credit = row['credit_amount']
+            
+            # Hitung Saldo Berjalan (Running Balance)
+            if normal_balance == 'Debit':
+                running_balance += (debit - credit)
+            else: # Normal balance is Credit
+                running_balance += (credit - debit)
+            
+            # Ambil deskripsi transaksi utama
+            description = row['description_entry']
+            if not description:
+                 description = 'Detail Transaksi'
+
+            # Record the transaction line
+            df_gl_data.append({
+                'Kode Akun': account_code,
+                'Nama Akun': account_name,
+                'Tanggal': row['transaction_date'],
+                'Keterangan': description,
+                'Ref': row['journal_id'],
+                'Debit': debit,
+                'Kredit': credit,
+                'Saldo': running_balance
+            })
+
+    df_gl = pd.DataFrame(df_gl_data)
+
+    if df_gl.empty:
+        return pd.DataFrame(columns=['Kode Akun', 'Nama Akun', 'Tanggal', 'Keterangan', 'Ref', 'Debit', 'Kredit', 'Saldo Debet', 'Saldo Kredit'])
+
+
+    # NEW FIX: Format Tanggal column to 'YYYY-MM-DD' string
+    df_gl['Tanggal'] = df_gl['Tanggal'].dt.strftime('%Y-%m-%d')
+    
+    # Split the running balance into Debit/Credit columns based on Normal Balance
+    df_gl = df_gl.merge(df_coa[['account_code', 'normal_balance']], left_on='Kode Akun', right_on='account_code', how='left').drop(columns=['account_code'])
+    
+    df_gl['Saldo Debet'] = df_gl.apply(
+        lambda row: row['Saldo'] if row['normal_balance'] == 'Debit' and row['Saldo'] >= 0 else (-row['Saldo'] if row['normal_balance'] == 'Credit' and row['Saldo'] < 0 else 0), axis=1
+    )
+    df_gl['Saldo Kredit'] = df_gl.apply(
+        lambda row: row['Saldo'] if row['normal_balance'] == 'Credit' and row['Saldo'] >= 0 else (-row['Saldo'] if row['normal_balance'] == 'Debit' and row['Saldo'] < 0 else 0), axis=1
+    )
+    
+    # Pilih kolom akhir
+    df_gl_final = df_gl[['Kode Akun', 'Nama Akun', 'Tanggal', 'Keterangan', 'Ref', 'Debit', 'Kredit', 'Saldo Debet', 'Saldo Kredit']].sort_values(by=['Kode Akun', 'Tanggal']).reset_index(drop=True)
+    
+    # Hapus duplikasi Kode/Nama Akun dan Keterangan untuk tampilan yang bersih (seperti Excel)
+    df_gl_final['Kode Akun'] = df_gl_final.groupby('Kode Akun')['Kode Akun'].transform(lambda x: x if x.index.isin([x.index[0]]) else '')
+    df_gl_final['Nama Akun'] = df_gl_final.groupby('Nama Akun')['Nama Akun'].transform(lambda x: x if x.index.isin([x.index[0]]) else '')
+
+
+    return df_gl_final
 
 
 def calculate_closing_and_reporting_data(df_tb_adj):
@@ -395,6 +561,10 @@ def create_inventory_movement_report(df_movements):
     if df_movements.empty or 'products' not in df_movements.columns:
         return pd.DataFrame(columns=['Produk', 'Tanggal', 'Jenis', 'Referensi', 'Masuk Qty', 'Keluar Qty', 'Harga Satuan', 'Total Mutasi', 'Saldo Qty', 'Saldo Nilai'])
 
+    # NEW FIX: Konversi movement_date ke string YYYY-MM-DD
+    if 'movement_date' in df_movements.columns:
+        df_movements['movement_date'] = pd.to_datetime(df_movements['movement_date']).dt.strftime('%Y-%m-%d')
+
     # Expand nested product name
     df_movements['product_name'] = df_movements['products'].apply(lambda x: x.get('name') if isinstance(x, dict) else 'Unknown')
     
@@ -437,6 +607,9 @@ def create_inventory_movement_report(df_movements):
     # Clean up column names for display
     df_report.columns = ['Produk', 'Tanggal', 'Jenis', 'Referensi', 'Masuk Qty', 'Keluar Qty', 'Harga Satuan', 'Total Mutasi', 'Saldo Qty', 'Saldo Nilai']
     
+    # Hapus duplikasi Nama Produk
+    df_report['Produk'] = df_report.groupby('Produk')['Produk'].transform(lambda x: x if x.index.isin([x.index[0]]) else '')
+    
     return df_report.sort_values(by=['Produk', 'Tanggal'])
 
 
@@ -468,6 +641,12 @@ def generate_reports():
     
     df_journal_merged, df_coa, df_movements = get_base_data_and_filter(start_date, end_date)
     
+    # --- Tambahkan Jurnal Umum ---
+    df_general_journal = create_general_journal_report(df_journal_merged)
+
+    # --- Tambahkan Buku Besar ---
+    df_general_ledger = create_general_ledger_report(df_journal_merged, df_coa)
+
     # --- 1. NERACA SALDO SEBELUM PENYESUAIAN (TB BEFORE ADJ) ---
     df_tb_before_adj = calculate_trial_balance(df_journal_merged, df_coa)
 
@@ -480,7 +659,6 @@ def generate_reports():
     df_ws.columns = ['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Saldo Normal', 'TB Debit', 'TB Kredit', 'Tipe_Num']
     
     # Merge Jurnal Penyesuaian (MJ)
-    # Kolom hasil merge akan dinamai 'Debit' dan 'Kredit' karena tidak konflik dengan 'TB Debit'/'TB Kredit'
     df_ws = df_ws.merge(df_adjustments[['Kode Akun', 'Debit', 'Kredit']], on='Kode Akun', how='left').fillna(0)
     
     # FIX: Rename kolom yang baru masuk ('Debit' dan 'Kredit') menjadi nama yang diharapkan ('MJ Debit' dan 'MJ Kredit')
@@ -511,13 +689,15 @@ def generate_reports():
 
     return {
         "Laba Bersih": net_income,
+        "Jurnal Umum": df_general_journal, 
+        "Buku Besar Umum": df_general_ledger, 
         "Neraca Saldo Sebelum Penyesuaian": df_tb_before_adj,
         "Worksheet (Kertas Kerja)": df_ws_final,
         "Laporan Laba Rugi": df_laba_rugi,
         "Laporan Perubahan Modal": df_re,
         "Laporan Posisi Keuangan": df_laporan_posisi_keuangan,
         "Laporan Arus Kas": df_cash_flow,
-        "Kartu Persediaan": df_inventory_card, # Ditambahkan
+        "Kartu Persediaan": df_inventory_card, 
     }
 
 
@@ -537,10 +717,10 @@ def show_reports_page():
             return f"(Rp {-amount:,.0f})".replace(",", "_").replace(".", ",").replace("_", ".")
         return f"Rp {amount:,.0f}".replace(",", "_").replace(".", ",").replace("_", ".")
 
-    def display_formatted_df(df, columns_to_format=['Debit', 'Kredit', 'TB Debit', 'TB Kredit', 'MJ Debit', 'MJ Kredit', 'TB ADJ Debit', 'TB ADJ Kredit', 'IS Debit', 'IS Kredit', 'BS Debit', 'BS Kredit', 'Jumlah', 'Total', 'Jumlah 1', 'Jumlah 2', 'Harga Satuan', 'Total Mutasi', 'Saldo Nilai']):
+    def display_formatted_df(df, columns_to_format=['Debit', 'Kredit', 'TB Debit', 'TB Kredit', 'MJ Debit', 'MJ Kredit', 'TB ADJ Debit', 'TB ADJ Kredit', 'IS Debit', 'IS Kredit', 'BS Debit', 'BS Kredit', 'Jumlah', 'Total', 'Jumlah 1', 'Jumlah 2', 'Harga Satuan', 'Total Mutasi', 'Saldo Nilai', 'Saldo Debet', 'Saldo Kredit']):
         df_display = df.copy()
         for col in columns_to_format:
-            if col in df_display.columns and col not in ['Saldo Qty', 'Masuk Qty', 'Keluar Qty']:
+            if col in df_display.columns and col not in ['Saldo Qty', 'Masuk Qty', 'Keluar Qty', 'Tanggal', 'Keterangan']:
                 # Handling for negative numbers in certain columns (e.g., Jumlah, Jumlah 1, Jumlah 2)
                 if col in ['Jumlah', 'Jumlah 1', 'Jumlah 2'] and any(df_display[col].apply(lambda x: isinstance(x, (int, float)) and x < 0)):
                      df_display[col] = df_display[col].apply(lambda x: format_rupiah(x))
@@ -559,27 +739,62 @@ def show_reports_page():
         st.error(f"**Rugi Bersih (Net Loss): {format_rupiah(net_income)}**")
     st.markdown("---")
     
-    # Tampilkan Worksheet (Urutan 1)
-    st.header("1. Kertas Kerja (Worksheet)")
-    st.info("Worksheet mencakup Neraca Saldo, Jurnal Penyesuaian, Neraca Saldo Setelah Penyesuaian, Laba Rugi, dan Posisi Keuangan.")
-    st.dataframe(display_formatted_df(reports["Worksheet (Kertas Kerja)"]), use_container_width=True)
+    # --- JURNAL & BUKU BESAR (SEBAGAI HASIL AKUMULASI) ---
+    st.header("1. Jurnal & Buku Besar")
     
-    # Tampilkan Laporan Keuangan Utama (Urutan 2, 3, 4, 5)
-    st.header("2. Laporan Laba Rugi (Income Statement)")
+    # Jurnal Umum
+    st.subheader("1.1 Jurnal Umum (General Journal)")
+    st.info("Menampilkan semua transaksi Jurnal Umum (termasuk Saldo Awal dan GJ November). Akun Kredit di-indentasi.")
+    df_ju = reports["Jurnal Umum"]
+    df_ju_display = display_formatted_df(df_ju, columns_to_format=['Debit', 'Kredit'])
+    st.dataframe(df_ju_display.style.set_properties(**{'text-align': 'right'}, subset=['Debit', 'Kredit']), use_container_width=True)
+
+    # Buku Besar Umum
+    st.subheader("1.2 Buku Besar Umum (General Ledger)")
+    st.info("Menampilkan saldo berjalan (running balance) untuk setiap akun. Saldo awal telah diakumulasi.")
+    df_gl = reports["Buku Besar Umum"]
+    df_gl_display = display_formatted_df(df_gl, columns_to_format=['Debit', 'Kredit', 'Saldo Debet', 'Saldo Kredit'])
+    st.dataframe(df_gl_display, use_container_width=True)
+
+
+    # --- NERACA SALDO & WORKSHEET ---
+    st.header("2. Kertas Kerja & Neraca Saldo")
+    
+    # Neraca Saldo Sebelum Penyesuaian
+    st.subheader("2.1 Neraca Saldo Sebelum Penyesuaian")
+    df_tb_before_adj_display = display_formatted_df(reports["Neraca Saldo Sebelum Penyesuaian"].drop(columns=['Tipe Akun', 'Tipe_Num']), columns_to_format=['Debit', 'Kredit'])
+    st.dataframe(df_tb_before_adj_display, use_container_width=True)
+    
+    # Worksheet
+    st.subheader("2.2 Kertas Kerja (Worksheet)")
+    st.info("Worksheet mencakup NS, MJ, NS Disesuaikan, Laba Rugi, dan Posisi Keuangan.")
+    df_ws_display = display_formatted_df(reports["Worksheet (Kertas Kerja)"], columns_to_format=['TB Debit', 'TB Kredit', 'MJ Debit', 'MJ Kredit', 'TB ADJ Debit', 'TB ADJ Kredit', 'IS Debit', 'IS Kredit', 'BS Debit', 'BS Kredit'])
+    st.dataframe(df_ws_display, use_container_width=True)
+
+
+    # --- LAPORAN KEUANGAN UTAMA ---
+    st.header("3. Laporan Keuangan Utama")
+    
+    # Laporan Laba Rugi
+    st.subheader("3.1 Laporan Laba Rugi (Income Statement)")
     st.dataframe(display_formatted_df(reports["Laporan Laba Rugi"], columns_to_format=['Jumlah', 'Total']), use_container_width=True)
     
-    st.header("3. Laporan Perubahan Modal (Retained Earnings)")
+    # Laporan Perubahan Modal
+    st.subheader("3.2 Laporan Perubahan Modal (Retained Earnings)")
     st.dataframe(display_formatted_df(reports["Laporan Perubahan Modal"], columns_to_format=['Jumlah']), use_container_width=True)
     
-    st.header("4. Laporan Posisi Keuangan (Balance Sheet)")
+    # Laporan Posisi Keuangan
+    st.subheader("3.3 Laporan Posisi Keuangan (Balance Sheet)")
     st.dataframe(display_formatted_df(reports["Laporan Posisi Keuangan"], columns_to_format=['Jumlah 1', 'Jumlah 2']), use_container_width=True)
     
-    st.header("5. Laporan Arus Kas (Cash Flow Statement)")
+    # Laporan Arus Kas
+    st.subheader("3.4 Laporan Arus Kas (Cash Flow Statement)")
     st.warning("Perhitungan Arus Kas ini disederhanakan/disimulasikan dari Jurnal Umum dan data historis Excel.")
     st.dataframe(display_formatted_df(reports["Laporan Arus Kas"], columns_to_format=['Jumlah 1', 'Jumlah 2']), use_container_width=True)
     
-    # Tampilkan Kartu Persediaan (Urutan 6)
-    st.header("6. Kartu Persediaan (Inventory Card)")
+    # --- KARTU PERSEDIAAN ---
+    st.header("4. Kartu Persediaan")
+    st.subheader("4.1 Kartu Persediaan (Inventory Card)")
     st.info("Menampilkan log pergerakan unit (Masuk/Keluar) beserta biaya per unit, diambil dari tabel 'inventory_movements'.")
     st.dataframe(display_formatted_df(reports["Kartu Persediaan"]), use_container_width=True)
     
