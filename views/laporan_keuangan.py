@@ -16,7 +16,7 @@ def format_rupiah(amount):
 
 # --- DATA FETCHING & FILTERING ---
 
-@st.cache_data
+@st.cache_data(ttl=60)
 def fetch_all_accounting_data():
     """Mengambil semua data yang diperlukan dari Supabase dan mengonversi tipe data."""
     
@@ -30,24 +30,16 @@ def fetch_all_accounting_data():
         
         df_entries = pd.DataFrame(journal_entries_response.data)
         
-        # Handle empty entries dataframe
+        # Konversi Tanggal di Sumber (di dalam cache) dan hapus zona waktu
         if not df_entries.empty:
-            # Konversi Tanggal di Sumber (di dalam cache) dan hapus zona waktu
             df_entries['transaction_date'] = pd.to_datetime(df_entries['transaction_date'], errors='coerce')
             if df_entries['transaction_date'].dt.tz is not None:
                  df_entries['transaction_date'] = df_entries['transaction_date'].dt.tz_localize(None)
             # Normalisasi ke tengah malam
             df_entries['transaction_date'] = df_entries['transaction_date'].dt.normalize()
-        else:
-            # Ensure columns exist even if empty
-            df_entries = pd.DataFrame(columns=['id', 'transaction_date', 'description', 'order_id'])
-
-        df_lines = pd.DataFrame(journal_lines_response.data).fillna(0)
-        if df_lines.empty:
-             df_lines = pd.DataFrame(columns=['journal_id', 'account_code', 'debit_amount', 'credit_amount'])
-
+        
         return {
-            "journal_lines": df_lines,
+            "journal_lines": pd.DataFrame(journal_lines_response.data).fillna(0),
             "journal_entries": df_entries,
             "coa": pd.DataFrame(coa_response.data),
             "inventory_movements": pd.DataFrame(inventory_response.data),
@@ -55,8 +47,8 @@ def fetch_all_accounting_data():
     except Exception as e:
         st.error(f"Gagal mengambil data dari Supabase: {e}. Pastikan Supabase aktif.")
         return {
-            "journal_lines": pd.DataFrame(columns=['journal_id', 'account_code', 'debit_amount', 'credit_amount']),
-            "journal_entries": pd.DataFrame(columns=['id', 'transaction_date', 'description', 'order_id']),
+            "journal_lines": pd.DataFrame(),
+            "journal_entries": pd.DataFrame(),
             "coa": pd.DataFrame(columns=['account_code', 'account_name', 'account_type', 'normal_balance']),
             "inventory_movements": pd.DataFrame(),
         }
@@ -72,15 +64,8 @@ def get_base_data_and_filter(start_date, end_date):
     df_coa = data["coa"]
     df_movements = data["inventory_movements"]
     
-    # Definisi kolom standar untuk return kosong agar tidak KeyError
-    columns_standard = [
-        'account_code', 'account_name', 'transaction_date', 
-        'debit_amount', 'credit_amount', 'journal_id', 
-        'description_entry', 'id'
-    ]
-
     if df_entries.empty or df_lines.empty:
-        empty_merged = pd.DataFrame(columns=columns_standard)
+        empty_merged = pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount'])
         return empty_merged, df_coa, df_movements
         
     df_entries['transaction_date'] = df_entries['transaction_date'].astype('datetime64[ns]')
@@ -93,7 +78,7 @@ def get_base_data_and_filter(start_date, end_date):
     ].copy()
         
     if df_journal_entries_final.empty:
-        empty_merged = pd.DataFrame(columns=columns_standard)
+        empty_merged = pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount'])
         return empty_merged, df_coa, df_movements
 
     # Rename deskripsi untuk konsistensi
@@ -114,11 +99,12 @@ def calculate_trial_balance(df_journal, df_coa):
     """Menghitung Neraca Saldo (TB) dari data jurnal yang digabungkan."""
     
     if df_journal.empty:
+        # [PERBAIKAN] Inisialisasi DataFrame kosong dengan struktur yang benar
         df_tb = df_coa[['account_code', 'account_name', 'account_type']].copy()
         df_tb['Debit'] = 0.0
         df_tb['Kredit'] = 0.0
-        # Pastikan kolom Tipe_Num ada
-        df_tb['Tipe_Num'] = df_tb['account_code'].astype(str).str[0].apply(lambda x: int(x) if x.isdigit() else 0)
+        # [PERBAIKAN] Tambahkan kolom Tipe_Num agar tidak error saat select kolom di bawah
+        df_tb['Tipe_Num'] = df_tb['account_code'].astype(str).str[0].astype(int)
     else:
         df_tb = df_journal.groupby('account_code').agg(
             Total_Debit=('debit_amount', 'sum'),
@@ -152,13 +138,7 @@ def create_general_journal_report(df_journal):
     df_ju = df_journal.sort_values(by=['transaction_date', 'journal_id', 'debit_amount'], ascending=[True, True, False]).copy()
     df_ju['Tanggal'] = df_ju['transaction_date'].dt.strftime('%Y-%m-%d')
     
-    # Ensure all columns exist before selection
-    required_cols = ['Tanggal', 'description_entry', 'account_code', 'account_name', 'debit_amount', 'credit_amount', 'journal_id']
-    for col in required_cols:
-        if col not in df_ju.columns:
-            df_ju[col] = ''
-
-    df_ju = df_ju[required_cols].copy()
+    df_ju = df_ju[['Tanggal', 'description_entry', 'account_code', 'account_name', 'debit_amount', 'credit_amount', 'journal_id']].copy()
     
     df_ju.columns = ['Tanggal', 'Deskripsi Transaksi', 'Kode Akun', 'Nama Akun', 'Debit', 'Kredit', 'Ref Jurnal']
 
@@ -183,16 +163,14 @@ def create_general_ledger_report(df_journal, df_coa):
     df_gl_data = []
 
     for account_code, group in df_journal.groupby('account_code'):
-        # Safe check for coa info
-        coa_rows = df_coa[df_coa['account_code'] == account_code]
-        if coa_rows.empty: continue
-        
-        coa_info = coa_rows.iloc[0]
+        coa_info = df_coa[df_coa['account_code'] == account_code].iloc[0]
         account_name = coa_info['account_name']
         normal_balance = coa_info['normal_balance']
         
         group = group.sort_values(by=['transaction_date', 'journal_id', 'debit_amount'], ascending=[True, True, False]).copy()
         running_balance = 0.0
+        
+        # Saldo Awal Logic (Jika ada transaksi saldo awal)
         
         for index, row in group.iterrows():
             debit = row['debit_amount']
@@ -203,7 +181,7 @@ def create_general_ledger_report(df_journal, df_coa):
             else: 
                 running_balance += (credit - debit)
             
-            desc = row['description_entry'] if pd.notna(row['description_entry']) else 'Detail'
+            desc = row['description_entry'] if row['description_entry'] else 'Detail'
 
             df_gl_data.append({
                 'Kode Akun': account_code,
@@ -218,7 +196,7 @@ def create_general_ledger_report(df_journal, df_coa):
 
     df_gl = pd.DataFrame(df_gl_data)
     if df_gl.empty:
-        return pd.DataFrame(columns=['Kode Akun', 'Nama Akun', 'Tanggal', 'Keterangan', 'Ref', 'Debit', 'Kredit', 'Saldo Debet', 'Saldo Kredit'])
+        return pd.DataFrame()
 
     df_gl['Tanggal'] = df_gl['Tanggal'].dt.strftime('%Y-%m-%d')
     df_gl = df_gl.merge(df_coa[['account_code', 'normal_balance']], left_on='Kode Akun', right_on='account_code', how='left').drop(columns=['account_code'])
@@ -247,12 +225,8 @@ def calculate_closing_and_reporting_data(df_tb_adj):
     Total_Expense = df_tb_adj[df_tb_adj['Tipe_Num'].isin([5, 6, 9])]['Debit'].sum()
     
     # Prive & Modal Awal
-    # Gunakan get untuk menghindari error jika akun tidak ada di TB
-    prive_rows = df_tb_adj[df_tb_adj['Kode Akun'] == AKUN_PRIVE]
-    Prive_Value = prive_rows['Debit'].sum() if not prive_rows.empty else 0
-    
-    modal_rows = df_tb_adj[df_tb_adj['Kode Akun'] == AKUN_MODAL]
-    Modal_Awal_Baris = modal_rows['Kredit'].sum() if not modal_rows.empty else 0
+    Prive_Value = df_tb_adj[df_tb_adj['Kode Akun'] == AKUN_PRIVE]['Debit'].sum()
+    Modal_Awal_Baris = df_tb_adj[df_tb_adj['Kode Akun'] == AKUN_MODAL]['Kredit'].sum()
     
     Net_Income = Total_Revenue - Total_Expense
     Modal_Baru = Modal_Awal_Baris + Net_Income - Prive_Value
@@ -386,10 +360,6 @@ def create_cash_flow_detailed(df_journal_merged):
     """
     Membuat Cash Flow Breakdown berdasarkan transaksi Akun Kas (1-1100).
     """
-    # Pastikan dataframe tidak kosong dan memiliki kolom yang dibutuhkan
-    if df_journal_merged.empty:
-        return pd.DataFrame(columns=['Deskripsi', 'Jumlah', 'Total'])
-
     # Ambil semua transaksi yang melibatkan Kas
     df_cash = df_journal_merged[df_journal_merged['account_code'] == '1-1100'].copy()
     
@@ -399,24 +369,20 @@ def create_cash_flow_detailed(df_journal_merged):
     financing = []
     
     for _, row in df_cash.iterrows():
-        desc = str(row.get('description_entry', '')).lower()
+        desc = str(row['description_entry']).lower()
         amount = row['debit_amount'] if row['debit_amount'] > 0 else -row['credit_amount']
-        desc_display = row.get('description_entry', 'Transaksi')
-
-        # Skip jika deskripsi kosong atau saldo awal (opsional, tergantung preferensi)
-        # if 'saldo awal' in desc: continue 
         
         # KATEGORISASI SEDERHANA BERDASARKAN DESKRIPSI
         if 'prive' in desc or 'utang' in desc or 'pinjaman' in desc or 'angsuran' in desc:
-            financing.append((desc_display, amount))
+            financing.append((row['description_entry'], amount))
         elif 'aset' in desc or 'tanah' in desc or 'bangunan' in desc:
-            investing.append((desc_display, amount))
+            investing.append((row['description_entry'], amount))
         else:
             # Default ke Operasi (Penjualan, Beban, Gaji, dll)
             if amount > 0:
-                operating_in.append((desc_display, amount))
+                operating_in.append((row['description_entry'], amount))
             else:
-                operating_out.append((desc_display, amount))
+                operating_out.append((row['description_entry'], amount))
                 
     data = []
     
@@ -517,8 +483,9 @@ def to_excel_bytes(reports):
 
 def generate_reports():
     today = date.today()
+    # [PERBAIKAN] Default start_date diatur ke 31 Oktober 2025 sesuai permintaan
     if "end_date" not in st.session_state: st.session_state.end_date = today
-    if "start_date" not in st.session_state: st.session_state.start_date = today.replace(day=1)
+    if "start_date" not in st.session_state: st.session_state.start_date = date(2025, 10, 31)
     
     start_date = st.sidebar.date_input("Tanggal Mulai", value=st.session_state.start_date)
     end_date = st.sidebar.date_input("Tanggal Akhir", value=st.session_state.end_date)
@@ -532,19 +499,9 @@ def generate_reports():
     # Hitung Neraca Saldo (Adjusted langsung karena AJP sudah di DB)
     df_tb = calculate_trial_balance(df_merged, df_coa)
     
-    # Karena AJP sudah masuk sebagai transaksi jurnal biasa di DB (ID 200+),
-    # Maka df_tb yang kita hitung sebenarnya SUDAH Adjusted.
-    # Untuk keperluan tampilan "Worksheet" klasik (TB Before -> Adj -> TB After),
-    # kita perlu memisahkan transaksi AJP.
-    
-    # Pisahkan AJP (ID >= 200) dan Before AJP (ID < 200)
-    # Pastikan journal_id ada (jika df_merged kosong, sudah dihandle di awal)
-    if not df_merged.empty and 'journal_id' in df_merged.columns:
-        df_merged_before = df_merged[df_merged['journal_id'] < 200]
-        df_merged_ajp = df_merged[df_merged['journal_id'] >= 200]
-    else:
-        df_merged_before = df_merged
-        df_merged_ajp = df_merged[0:0] # Empty
+    # Pisahkan AJP (ID >= 200) dan Before AJP (ID < 200) untuk Worksheet
+    df_merged_before = df_merged[df_merged['journal_id'] < 200]
+    df_merged_ajp = df_merged[df_merged['journal_id'] >= 200]
     
     df_tb_before = calculate_trial_balance(df_merged_before, df_coa)
     df_adj_only = calculate_trial_balance(df_merged_ajp, df_coa) # Ini adjustment saja
@@ -560,23 +517,21 @@ def generate_reports():
     df_ws.rename(columns={'Debit': 'MJ Debit', 'Kredit': 'MJ Kredit'}, inplace=True)
     
     # Hitung TB Adjusted (Kolom Worksheet)
-    # Logika: TB + MJ = TB_Adj
     def calc_adj(row):
         net = (row['TB Debit'] - row['TB Kredit']) + (row['MJ Debit'] - row['MJ Kredit'])
         if row['Saldo Normal'] == 'Debit': return max(0, net), max(0, -net)
         else: return max(0, -net), max(0, net)
         
     df_ws[['Debit', 'Kredit']] = df_ws.apply(lambda x: calc_adj(x), axis=1, result_type='expand')
-    # Sekarang df_ws['Debit'] dan ['Kredit'] adalah TB Adjusted yang benar
     
     # Gunakan df_ws (TB Adj) untuk laporan keuangan
-    # Kita perlu format standar DataFrame untuk fungsi calc reports
     df_tb_adj_final = df_ws[['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Debit', 'Kredit', 'Tipe_Num']].copy()
     
     net_inc, df_is, df_re, df_bs, _ = calculate_closing_and_reporting_data(df_tb_adj_final)
     
     # Worksheet Final Display
-    df_ws_display = df_ws[['Kode Akun', 'Nama Akun', 'TB Debit', 'TB Kredit', 'MJ Debit', 'MJ Kredit', 'Debit', 'Kredit']]
+    # [PERBAIKAN] Tambahkan .copy() untuk menghindari SettingWithCopyWarning
+    df_ws_display = df_ws[['Kode Akun', 'Nama Akun', 'TB Debit', 'TB Kredit', 'MJ Debit', 'MJ Kredit', 'Debit', 'Kredit']].copy()
     df_ws_display.rename(columns={'Debit': 'TB ADJ Debit', 'Kredit': 'TB ADJ Kredit'}, inplace=True)
     
     # Cash Flow (Detailed)
@@ -601,6 +556,11 @@ def generate_reports():
 def show_reports_page():
     st.title("📊 Laporan Keuangan")
     st.sidebar.header("Filter")
+    
+    # Tombol Refresh Manual untuk membersihkan cache
+    if st.sidebar.button("🔄 Refresh Data Real-time"):
+        st.cache_data.clear()
+        st.rerun()
     
     reports = generate_reports()
     
