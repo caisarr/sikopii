@@ -3,6 +3,8 @@ from supabase_client import supabase
 from datetime import datetime
 import numpy as np
 
+# PENTING: Skrip ini akan menghapus data lama di tabel-tabel utama Supabase Anda.
+
 # ✅ MAPPING ID PRODUK BERDASARKAN INPUT ANDA
 PRODUCT_CODE_TO_ID = {
     "A01": 1, 
@@ -14,31 +16,33 @@ PRODUCT_CODE_TO_ID = {
 }
 
 
-# --- 1. FUNGSI PEMBERSIHAN DATA (FIX API ERROR) ---
+# --- 1. FUNGSI PEMBERSIHAN DATA (URUTAN YANG BENAR) ---
 def clear_all_data():
-    """Menghapus data dari tabel-tabel anak terlebih dahulu untuk menghindari Foreign Key Error."""
+    """
+    Menghapus data dari tabel-tabel anak terlebih dahulu untuk menghindari Foreign Key Error (23503).
+    """
     print("\n--- Membersihkan Data Database (Wajib) ---")
     
-    # 1. Hapus data Inventory Movements (Tabel Paling Bawah)
+    # 1. Hapus data Inventory Movements (Anak)
     print("Aksi: Membersihkan inventory_movements...")
     supabase.table("inventory_movements").delete().neq("id", 0).execute() 
     
-    # 2. Hapus data Journal Lines (Tabel Anak dari COA & Entries)
+    # 2. Hapus data Journal Lines (Anak dari COA & Entries)
     print("Aksi: Membersihkan journal_lines...")
     supabase.table("journal_lines").delete().neq("id", 0).execute() 
     
-    # 3. Hapus data Journal Entries (Tabel Induk dari Lines)
+    # 3. Hapus data Journal Entries (Induk dari Lines)
     print("Aksi: Membersihkan journal_entries...")
     supabase.table("journal_entries").delete().neq("id", 0).execute() 
     
-    # 4. Hapus data Chart of Accounts (Tabel Induk - Sekarang Aman Dihapus)
+    # 4. Hapus data Chart of Accounts (Induk - Sekarang AMAN Dihapus)
     print("Aksi: Membersihkan chart_of_accounts...")
     supabase.table("chart_of_accounts").delete().neq("account_code", "DUMMY").execute() 
     
     print("Pembersihan data historis Selesai.")
 
 
-# --- 2. LOGIKA INFERENSI COA (Tidak Berubah) ---
+# --- 2. LOGIKA IMPORT COA (Hanya Insert) ---
 def infer_coa_details(account_code):
     """Menentukan tipe akun dan saldo normal dari kode akun."""
     code_prefix = str(account_code).split('-')[0]
@@ -52,10 +56,10 @@ def infer_coa_details(account_code):
     elif code_prefix in ['5', '6', '9']: return "Expense", "Debit"
     return "Other", "Debit"
 
-# --- 3. LOGIKA IMPORT COA (Hanya Insert) ---
 def import_coa(file_path):
     print(f"\n--- Memulai Import Chart of Accounts (COA) dari {file_path} ---")
     try:
+        # Menggunakan delimiter=';'
         df = pd.read_csv(file_path, header=4, usecols=[0, 1], names=['account_code', 'account_name'], 
                          skiprows=lambda x: x < 5 and x != 4, delimiter=';')
     except Exception as e:
@@ -68,13 +72,15 @@ def import_coa(file_path):
     df['account_type'], df['normal_balance'] = zip(*df['account_code'].apply(infer_coa_details))
     data_to_insert = df[['account_code', 'account_name', 'account_type', 'normal_balance']].to_dict('records')
     
+    # HANYA INSERT. Penghapusan dilakukan di clear_all_data().
     response = supabase.table("chart_of_accounts").insert(data_to_insert).execute()
     print(f"Import COA Selesai. Total {len(response.data)} akun dimasukkan.")
 
-# --- 4. LOGIKA IMPORT JURNAL UMUM (Hanya Insert) ---
+# --- 3. LOGIKA IMPORT JURNAL UMUM (Hanya Insert) ---
 def import_general_journal(file_path):
     print(f"\n--- Memulai Import Jurnal Umum (GJ) dari {file_path} ---")
     try:
+        # Menggunakan delimiter=';'
         df_raw = pd.read_csv(file_path, header=6, usecols=[0, 3, 4, 5, 6], names=['Date', 'Description', 'REF', 'DEBET', 'CREDIT'], delimiter=';')
     except Exception as e:
         print(f"ERROR membaca file GJ: {e}"); return
@@ -108,6 +114,7 @@ def import_general_journal(file_path):
                     "debit_amount": row['DEBET'], "credit_amount": row['CREDIT'],
                 })
 
+    # HANYA INSERT. Penghapusan dilakukan di clear_all_data().
     if lines_to_insert:
         response = supabase.table("journal_lines").insert(lines_to_insert).execute()
         print(f"Import Journal Lines Selesai. Total {len(response.data)} baris jurnal dimasukkan.")
@@ -115,7 +122,7 @@ def import_general_journal(file_path):
         print("Tidak ada baris jurnal yang dimasukkan.")
     print("Import Jurnal Umum Selesai.")
 
-# --- 5. LOGIKA IMPORT INVENTORY MOVEMENTS (Kartu Persediaan) ---
+# --- 4. LOGIKA IMPORT INVENTORY MOVEMENTS (Kartu Persediaan) ---
 def import_inventory_movements(file_path):
     print("\n--- Memulai Import Data Unit Kartu Persediaan ---")
     
@@ -125,10 +132,11 @@ def import_inventory_movements(file_path):
 
     try:
         # Membaca data mentah. Kita akan memproses dari baris ke-6 (indeks 5).
+        # Menggunakan delimiter koma (,) karena struktur multi-kolom yang diasumsikan
         df_raw = pd.read_csv(file_path, header=None, skiprows=5, delimiter=',') 
         
     except Exception as e:
-        print(f"ERROR membaca file INVENTORY: {e}. Coba pastikan file di-save dengan delimiter KOMA (,) di Excel.")
+        print(f"ERROR membaca file INVENTORY: {e}. Silakan pastikan file di-save dengan delimiter KOMA (,) di Excel.")
         return
     
     try:
@@ -185,6 +193,7 @@ def import_inventory_movements(file_path):
                         "reference_id": f"INVEN-H-{index}",
                     })
         
+        # HANYA INSERT. Penghapusan dilakukan di clear_all_data().
         if movements_to_insert:
             supabase.table("inventory_movements").insert(movements_to_insert).execute()
             print(f"Import Kartu Persediaan Selesai. Total {len(movements_to_insert)} pergerakan unit dimasukkan.")
@@ -195,10 +204,11 @@ def import_inventory_movements(file_path):
         print(f"FATAL ERROR saat memproses Kartu Persediaan: {e}")
         print("Silakan pastikan format file SIKLUS EXCEL.xlsx - INVENTORY.csv Anda menggunakan delimiter KOMA (,) dan struktur kolomnya tetap.")
 
+
 # --- EKSEKUSI UTAMA ---
 if __name__ == "__main__":
     
-    # 1. Clear semua tabel dalam urutan yang benar (FIX API ERROR)
+    # 1. Clear semua tabel dalam urutan yang benar (AKSI FIX)
     clear_all_data()
     
     # 2. Import data baru
