@@ -16,7 +16,8 @@ def format_rupiah(amount):
 
 # --- DATA FETCHING & FILTERING ---
 
-@st.cache_data
+# [PERBAIKAN 1] Menambahkan TTL (Time To Live) agar cache otomatis refresh setiap 60 detik
+@st.cache_data(ttl=60)
 def fetch_all_accounting_data():
     """Mengambil semua data yang diperlukan dari Supabase dan mengonversi tipe data."""
     
@@ -31,11 +32,12 @@ def fetch_all_accounting_data():
         df_entries = pd.DataFrame(journal_entries_response.data)
         
         # Konversi Tanggal di Sumber (di dalam cache) dan hapus zona waktu
-        df_entries['transaction_date'] = pd.to_datetime(df_entries['transaction_date'], errors='coerce')
-        if df_entries['transaction_date'].dt.tz is not None:
-             df_entries['transaction_date'] = df_entries['transaction_date'].dt.tz_localize(None)
-        # Normalisasi ke tengah malam
-        df_entries['transaction_date'] = df_entries['transaction_date'].dt.normalize()
+        if not df_entries.empty:
+            df_entries['transaction_date'] = pd.to_datetime(df_entries['transaction_date'], errors='coerce')
+            if df_entries['transaction_date'].dt.tz is not None:
+                 df_entries['transaction_date'] = df_entries['transaction_date'].dt.tz_localize(None)
+            # Normalisasi ke tengah malam
+            df_entries['transaction_date'] = df_entries['transaction_date'].dt.normalize()
         
         return {
             "journal_lines": pd.DataFrame(journal_lines_response.data).fillna(0),
@@ -167,7 +169,6 @@ def create_general_ledger_report(df_journal, df_coa):
         running_balance = 0.0
         
         # Saldo Awal Logic (Jika ada transaksi saldo awal)
-        # ... Logic sederhana: Akumulasi berjalan dari 0 karena data kita sekarang sudah mencakup semua saldo awal di transaksi ID 99
         
         for index, row in group.iterrows():
             debit = row['debit_amount']
@@ -360,19 +361,6 @@ def create_cash_flow_detailed(df_journal_merged):
     # Ambil semua transaksi yang melibatkan Kas
     df_cash = df_journal_merged[df_journal_merged['account_code'] == '1-1100'].copy()
     
-    # Pisahkan Masuk dan Keluar
-    # Debit di Kas = Masuk, Kredit di Kas = Keluar
-    
-    # OPERASI
-    # Asumsi: Kas Masuk dengan deskripsi 'Penjualan', 'Jasa' -> Operasi
-    # Kas Keluar dengan deskripsi 'Beban', 'Gaji', 'Listrik', 'Pakan' -> Operasi
-    
-    # INVESTASI
-    # Beli Aset Tetap -> Investasi
-    
-    # PENDANAAN
-    # Prive, Utang -> Pendanaan
-    
     operating_in = []
     operating_out = []
     investing = []
@@ -431,11 +419,6 @@ def create_cash_flow_detailed(df_journal_merged):
     
     net_increase = net_op + net_inv + net_fin
     data.append(['KENAIKAN (PENURUNAN) BERSIH KAS', '', net_increase])
-    
-    # Saldo Awal Kas (Harusnya 0 jika ini bulan pertama, atau ambil saldo sebelumnya)
-    # Di sistem ini, Saldo Awal Kas sudah termasuk di transaksi 'Saldo Awal', jadi 
-    # yang kita hitung diatas sudah termasuk saldo awal jika range tanggal mencakupnya.
-    # Namun untuk format standar, kita pisahkan Saldo Awal ID 99.
     
     return pd.DataFrame(data, columns=['Deskripsi', 'Jumlah', 'Total'])
 
@@ -513,12 +496,7 @@ def generate_reports():
     # Hitung Neraca Saldo (Adjusted langsung karena AJP sudah di DB)
     df_tb = calculate_trial_balance(df_merged, df_coa)
     
-    # Karena AJP sudah masuk sebagai transaksi jurnal biasa di DB (ID 200+),
-    # Maka df_tb yang kita hitung sebenarnya SUDAH Adjusted.
-    # Untuk keperluan tampilan "Worksheet" klasik (TB Before -> Adj -> TB After),
-    # kita perlu memisahkan transaksi AJP.
-    
-    # Pisahkan AJP (ID >= 200) dan Before AJP (ID < 200)
+    # Pisahkan AJP (ID >= 200) dan Before AJP (ID < 200) untuk Worksheet
     df_merged_before = df_merged[df_merged['journal_id'] < 200]
     df_merged_ajp = df_merged[df_merged['journal_id'] >= 200]
     
@@ -536,17 +514,14 @@ def generate_reports():
     df_ws.rename(columns={'Debit': 'MJ Debit', 'Kredit': 'MJ Kredit'}, inplace=True)
     
     # Hitung TB Adjusted (Kolom Worksheet)
-    # Logika: TB + MJ = TB_Adj
     def calc_adj(row):
         net = (row['TB Debit'] - row['TB Kredit']) + (row['MJ Debit'] - row['MJ Kredit'])
         if row['Saldo Normal'] == 'Debit': return max(0, net), max(0, -net)
         else: return max(0, -net), max(0, net)
         
     df_ws[['Debit', 'Kredit']] = df_ws.apply(lambda x: calc_adj(x), axis=1, result_type='expand')
-    # Sekarang df_ws['Debit'] dan ['Kredit'] adalah TB Adjusted yang benar
     
     # Gunakan df_ws (TB Adj) untuk laporan keuangan
-    # Kita perlu format standar DataFrame untuk fungsi calc reports
     df_tb_adj_final = df_ws[['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Debit', 'Kredit', 'Tipe_Num']].copy()
     
     net_inc, df_is, df_re, df_bs, _ = calculate_closing_and_reporting_data(df_tb_adj_final)
@@ -577,6 +552,11 @@ def generate_reports():
 def show_reports_page():
     st.title("📊 Laporan Keuangan")
     st.sidebar.header("Filter")
+    
+    # [PERBAIKAN 2] Tombol Refresh Manual untuk membersihkan cache
+    if st.sidebar.button("🔄 Refresh Data Real-time"):
+        st.cache_data.clear()
+        st.rerun()
     
     reports = generate_reports()
     
