@@ -18,12 +18,10 @@ PRODUCT_CODE_TO_ID = {
 
 # --- 1. FUNGSI PEMBERSIHAN DATA (URUTAN HIERARKI YANG BENAR) ---
 def clear_all_data():
-    """
-    Menghapus data dari tabel-tabel anak terdalam terlebih dahulu untuk menghindari Foreign Key Error (23503).
-    """
+    """Menghapus data dari tabel-tabel anak terdalam terlebih dahulu untuk menghindari Foreign Key Error."""
     print("\n--- Membersihkan Data Database (Wajib) ---")
     
-    # 1. Hapus Tabel Anak Terdalam (yang paling banyak merujuk produk/akun)
+    # 1. Hapus Tabel Anak Terdalam 
     print("Aksi: Membersihkan inventory_movements...")
     supabase.table("inventory_movements").delete().neq("id", 0).execute() 
     
@@ -40,8 +38,7 @@ def clear_all_data():
     print("Aksi: Membersihkan orders...")
     supabase.table("orders").delete().neq("id", 0).execute() 
 
-    # 3. Hapus Tabel Products (Tabel ini menyebabkan error karena merujuk COA)
-    # Ini harus berhasil menghapus baris yang merujuk COA.
+    # 3. Hapus Tabel Products (Tabel ini merujuk COA)
     print("Aksi: Membersihkan products...")
     supabase.table("products").delete().neq("id", 0).execute() 
 
@@ -69,6 +66,7 @@ def infer_coa_details(account_code):
 def import_coa(file_path):
     print(f"\n--- Memulai Import Chart of Accounts (COA) dari {file_path} ---")
     try:
+        # Delimiter titik koma (;) - Sesuai cuplikan COA Anda
         df = pd.read_csv(file_path, header=4, usecols=[0, 1], names=['account_code', 'account_name'], 
                          skiprows=lambda x: x < 5 and x != 4, delimiter=';')
     except Exception as e:
@@ -88,16 +86,20 @@ def import_coa(file_path):
 def import_general_journal(file_path):
     print(f"\n--- Memulai Import Jurnal Umum (GJ) dari {file_path} ---")
     try:
-        df_raw = pd.read_csv(file_path, header=6, usecols=[0, 3, 4, 5, 6], names=['Date', 'Description', 'REF', 'DEBET', 'CREDIT'], delimiter=';')
+        # Perbaikan Indexing Kolom: Mengambil 5 kolom yang diperlukan.
+        # Header di baris ke-7. Delimiter titik koma (;).
+        df_raw = pd.read_csv(file_path, header=6, usecols=[0, 2, 3, 4, 5], names=['Date', 'Description', 'REF', 'DEBET', 'CREDIT'], delimiter=';', engine='python')
     except Exception as e:
-        print(f"ERROR membaca file GJ: {e}"); return
+        print(f"ERROR membaca file GJ: {e}")
+        print("SOLUSI: Harap pastikan file GJ Anda memiliki kolom: DATE, [kosong], DESCRIPTION, REF, DEBET, CREDIT, dipisahkan TITIK KOMA (;).")
+        return
 
     df_raw['Date'] = df_raw['Date'].ffill() 
     df_raw['Description'] = df_raw['Description'].ffill() 
     df_lines = df_raw.dropna(subset=['REF']).copy()
     
-    df_lines['DEBET'] = df_lines['DEBET'].astype(str).str.replace(r'[^0-9\.]', '', regex=True).replace(r'[\(\)]', '-', regex=True).astype(float).fillna(0)
-    df_lines['CREDIT'] = df_lines['CREDIT'].astype(str).str.replace(r'[^0-9\.]', '', regex=True).replace(r'[\(\)]', '-', regex=True).astype(float).fillna(0)
+    df_lines['DEBET'] = df_lines['DEBET'].astype(str).str.replace(r'[^\d,\.]', '', regex=True).str.replace(',', '.', regex=False).astype(float).fillna(0)
+    df_lines['CREDIT'] = df_lines['CREDIT'].astype(str).str.replace(r'[^\d,\.]', '', regex=True).str.replace(',', '.', regex=False).astype(float).fillna(0)
     
     df_lines['full_date_str'] = df_lines['Date'].astype(str) + ' Nov 2025'
     df_lines['transaction_date'] = pd.to_datetime(df_lines['full_date_str'], format='%d %b %Y', errors='coerce').dt.normalize()
@@ -137,10 +139,12 @@ def import_inventory_movements(file_path):
         return
 
     try:
-        df_raw = pd.read_csv(file_path, header=None, skiprows=5, delimiter=',') 
+        # Delimiter titik koma (;) - KOREKSI: Mengubah ke titik koma berdasarkan metadata upload terbaru.
+        df_raw = pd.read_csv(file_path, header=None, skiprows=5, delimiter=';') 
         
     except Exception as e:
-        print(f"ERROR membaca file INVENTORY: {e}. Coba pastikan file di-save dengan delimiter KOMA (,) di Excel.")
+        print(f"ERROR membaca file INVENTORY: {e}")
+        print("SOLUSI: Harap pastikan file INVENTORY Anda disimpan dengan delimiter TITIK KOMA (;) dan struktur kolomnya tetap.")
         return
     
     try:
@@ -151,6 +155,9 @@ def import_inventory_movements(file_path):
         for index, row in df_raw.iterrows():
             row_str = row.astype(str)
             
+            # Kolom IN (Penerimaan) QTY dan COST (indeks 4 dan 5)
+            # Kolom OUT (Pengeluaran) QTY dan COST (indeks 8 dan 9)
+            
             if 'ITEM' in row_str.iloc[0] and 'Kode' in row_str.iloc[13]:
                 current_product_code = row_str.iloc[14].strip() 
                 continue
@@ -158,6 +165,7 @@ def import_inventory_movements(file_path):
             if current_product_code and row_str.iloc[0].strip().startswith('2025'):
                 
                 try:
+                    # Ambil Tanggal dari kolom 0
                     date_part = row_str.iloc[0].strip()
                     movement_date = pd.to_datetime(date_part, errors='coerce').strftime('%Y-%m-%d')
                 except:
@@ -166,11 +174,16 @@ def import_inventory_movements(file_path):
                 product_id = PRODUCT_CODE_TO_ID.get(current_product_code)
                 if not product_id: continue 
 
+                # Parsing angka dengan mengganti titik dan koma yang digunakan dalam Rupiah
+                def parse_rupiah_number(val):
+                    val = str(val).replace('Rp', '').replace('.', '').replace(',', '.')
+                    return pd.to_numeric(val, errors='coerce') or 0
+
                 qty_in = pd.to_numeric(row_str.iloc[4], errors='coerce', downcast='integer') or 0
-                cost_in = pd.to_numeric(row_str.iloc[5], errors='coerce') or 0
+                cost_in = parse_rupiah_number(row_str.iloc[5]) 
                 
                 qty_out = pd.to_numeric(row_str.iloc[8], errors='coerce', downcast='integer') or 0
-                cost_out = pd.to_numeric(row_str.iloc[9], errors='coerce') or 0
+                cost_out = parse_rupiah_number(row_str.iloc[9])
 
                 if qty_in > 0 and cost_in > 0:
                     movements_to_insert.append({
