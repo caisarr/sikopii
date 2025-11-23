@@ -107,7 +107,7 @@ def get_base_data_and_filter(start_date, end_date):
         empty_merged = pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount'])
         return empty_merged, df_coa, df_movements
 
-    # Merge menggunakan suffix. Kolom 'description' TIDAK mendapat suffix karena tidak konflik.
+    # Merge menggunakan suffix agar kolom description dari entry terpisah dengan line
     df_journal_merged = df_lines.merge(df_journal_entries_final, left_on='journal_id', right_on='id', suffixes=('_line', '_entry'))
     
     # FIX UTAMA: Rename kolom 'description' (nama asli dari df_entries) ke 'description_entry'
@@ -192,9 +192,11 @@ def create_general_journal_report(df_journal):
 
     df_ju['Nama Akun'] = df_ju.apply(format_account_name, axis=1)
 
-    # Hapus duplikasi Tanggal dan Deskripsi Transaksi (hanya tampil di baris pertama entri jurnal)
-    df_ju['Tanggal'] = df_ju.groupby('Ref Jurnal', group_keys=False)['Tanggal'].apply(lambda x: x if x.index.isin([x.index[0]]) else '')
-    df_ju['Deskripsi Transaksi'] = df_ju.groupby('Ref Jurnal', group_keys=False)['Deskripsi Transaksi'].apply(lambda x: x if x.index.isin([x.index[0]]) else '')
+    # FIX PENTING: Gunakan cumcount dan np.where untuk menghilangkan duplikasi Tanggal dan Deskripsi
+    is_first_row = df_ju.groupby('Ref Jurnal').cumcount() == 0
+    
+    df_ju['Tanggal'] = np.where(is_first_row, df_ju['Tanggal'], '')
+    df_ju['Deskripsi Transaksi'] = np.where(is_first_row, df_ju['Deskripsi Transaksi'], '')
 
     # Pilih kolom akhir untuk tampilan
     df_ju_final = df_ju[[
@@ -311,8 +313,10 @@ def create_general_ledger_report(df_journal, df_coa):
     df_gl_final = df_gl[['Kode Akun', 'Nama Akun', 'Tanggal', 'Keterangan', 'Ref', 'Debit', 'Kredit', 'Saldo Debet', 'Saldo Kredit']].sort_values(by=['Kode Akun', 'Tanggal']).reset_index(drop=True)
     
     # Hapus duplikasi Kode/Nama Akun dan Keterangan untuk tampilan yang bersih (seperti Excel)
-    df_gl_final['Kode Akun'] = df_gl_final.groupby('Kode Akun')['Kode Akun'].transform(lambda x: x if x.index.isin([x.index[0]]) else '')
-    df_gl_final['Nama Akun'] = df_gl_final.groupby('Nama Akun')['Nama Akun'].transform(lambda x: x if x.index.isin([x.index[0]]) else '')
+    is_first_in_group = df_gl_final.groupby('Kode Akun').cumcount() == 0
+    
+    df_gl_final['Kode Akun'] = np.where(is_first_in_group, df_gl_final['Kode Akun'], '')
+    df_gl_final['Nama Akun'] = np.where(is_first_in_group, df_gl_final['Nama Akun'], '')
 
 
     return df_gl_final
@@ -611,7 +615,8 @@ def create_inventory_movement_report(df_movements):
     df_report.columns = ['Produk', 'Tanggal', 'Jenis', 'Referensi', 'Masuk Qty', 'Keluar Qty', 'Harga Satuan', 'Total Mutasi', 'Saldo Qty', 'Saldo Nilai']
     
     # Hapus duplikasi Nama Produk
-    df_report['Produk'] = df_report.groupby('Produk')['Produk'].transform(lambda x: x if x.index.isin([x.index[0]]) else '')
+    is_first_in_group = df_report.groupby('Produk').cumcount() == 0
+    df_report['Produk'] = np.where(is_first_in_group, df_report['Produk'], '')
     
     return df_report.sort_values(by=['Produk', 'Tanggal'])
 
