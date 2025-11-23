@@ -16,7 +16,6 @@ def format_rupiah(amount):
 
 # --- DATA FETCHING & FILTERING ---
 
-# [PERBAIKAN 1] Menambahkan TTL (Time To Live) agar cache otomatis refresh setiap 60 detik
 @st.cache_data(ttl=60)
 def fetch_all_accounting_data():
     """Mengambil semua data yang diperlukan dari Supabase dan mengonversi tipe data."""
@@ -100,9 +99,12 @@ def calculate_trial_balance(df_journal, df_coa):
     """Menghitung Neraca Saldo (TB) dari data jurnal yang digabungkan."""
     
     if df_journal.empty:
+        # [PERBAIKAN] Inisialisasi DataFrame kosong dengan struktur yang benar
         df_tb = df_coa[['account_code', 'account_name', 'account_type']].copy()
         df_tb['Debit'] = 0.0
         df_tb['Kredit'] = 0.0
+        # [PERBAIKAN] Tambahkan kolom Tipe_Num agar tidak error saat select kolom di bawah
+        df_tb['Tipe_Num'] = df_tb['account_code'].astype(str).str[0].astype(int)
     else:
         df_tb = df_journal.groupby('account_code').agg(
             Total_Debit=('debit_amount', 'sum'),
@@ -481,8 +483,9 @@ def to_excel_bytes(reports):
 
 def generate_reports():
     today = date.today()
+    # [PERBAIKAN] Default start_date diatur ke 31 Oktober 2025 sesuai permintaan
     if "end_date" not in st.session_state: st.session_state.end_date = today
-    if "start_date" not in st.session_state: st.session_state.start_date = today.replace(day=1)
+    if "start_date" not in st.session_state: st.session_state.start_date = date(2025, 10, 31)
     
     start_date = st.sidebar.date_input("Tanggal Mulai", value=st.session_state.start_date)
     end_date = st.sidebar.date_input("Tanggal Akhir", value=st.session_state.end_date)
@@ -527,7 +530,8 @@ def generate_reports():
     net_inc, df_is, df_re, df_bs, _ = calculate_closing_and_reporting_data(df_tb_adj_final)
     
     # Worksheet Final Display
-    df_ws_display = df_ws[['Kode Akun', 'Nama Akun', 'TB Debit', 'TB Kredit', 'MJ Debit', 'MJ Kredit', 'Debit', 'Kredit']]
+    # [PERBAIKAN] Tambahkan .copy() untuk menghindari SettingWithCopyWarning
+    df_ws_display = df_ws[['Kode Akun', 'Nama Akun', 'TB Debit', 'TB Kredit', 'MJ Debit', 'MJ Kredit', 'Debit', 'Kredit']].copy()
     df_ws_display.rename(columns={'Debit': 'TB ADJ Debit', 'Kredit': 'TB ADJ Kredit'}, inplace=True)
     
     # Cash Flow (Detailed)
@@ -553,7 +557,7 @@ def show_reports_page():
     st.title("📊 Laporan Keuangan")
     st.sidebar.header("Filter")
     
-    # [PERBAIKAN 2] Tombol Refresh Manual untuk membersihkan cache
+    # Tombol Refresh Manual untuk membersihkan cache
     if st.sidebar.button("🔄 Refresh Data Real-time"):
         st.cache_data.clear()
         st.rerun()
