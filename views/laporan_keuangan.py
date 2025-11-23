@@ -341,8 +341,7 @@ def create_cash_flow_statement_df(df_journal_merged, Net_Income):
     Data disimulasikan/disederhanakan berdasarkan SIKLUS EXCEL.xlsx - CASH FLOW.csv
     """
     
-    # Nilai dari SIKLUS EXCEL.xlsx - GL.csv dan SIKLUS EXCEL.xlsx - CASH FLOW.csv
-    # Saldo Kas Awal dari GL.csv
+    # Nilai dari SIKLUS EXCEL.xlsx - GL.csv / NS AWAL.csv
     CASH_OPENING_BALANCE = 168765000 
     
     # Total Cash In/Out Operasi (dari CASH FLOW.csv)
@@ -481,11 +480,15 @@ def generate_reports():
     df_ws.columns = ['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Saldo Normal', 'TB Debit', 'TB Kredit', 'Tipe_Num']
     
     # Merge Jurnal Penyesuaian (MJ)
-    df_ws = df_ws.merge(df_adjustments[['Kode Akun', 'Debit', 'Kredit']], on='Kode Akun', how='left', suffixes=('_TB', '_MJ')).fillna(0)
-    df_ws.rename(columns={'Debit_MJ': 'MJ Debit', 'Kredit_MJ': 'MJ Kredit'}, inplace=True)
+    # Kolom hasil merge akan dinamai 'Debit' dan 'Kredit' karena tidak konflik dengan 'TB Debit'/'TB Kredit'
+    df_ws = df_ws.merge(df_adjustments[['Kode Akun', 'Debit', 'Kredit']], on='Kode Akun', how='left').fillna(0)
+    
+    # FIX: Rename kolom yang baru masuk ('Debit' dan 'Kredit') menjadi nama yang diharapkan ('MJ Debit' dan 'MJ Kredit')
+    df_ws.rename(columns={'Debit': 'MJ Debit', 'Kredit': 'MJ Kredit'}, inplace=True) 
 
     # TB AFTER ADJUSTMENT (TB ADJ)
     def calculate_tb_adj_final(row):
+        # Perhitungan menggunakan kolom yang sudah diubah namanya: 'MJ Debit' dan 'MJ Kredit'
         net_change = (row['TB Debit'] - row['TB Kredit']) + (row['MJ Debit'] - row['MJ Kredit'])
         if row['Saldo Normal'] == 'Debit':
             return max(0, net_change), max(0, -net_change)
@@ -538,6 +541,7 @@ def show_reports_page():
         df_display = df.copy()
         for col in columns_to_format:
             if col in df_display.columns and col not in ['Saldo Qty', 'Masuk Qty', 'Keluar Qty']:
+                # Handling for negative numbers in certain columns (e.g., Jumlah, Jumlah 1, Jumlah 2)
                 if col in ['Jumlah', 'Jumlah 1', 'Jumlah 2'] and any(df_display[col].apply(lambda x: isinstance(x, (int, float)) and x < 0)):
                      df_display[col] = df_display[col].apply(lambda x: format_rupiah(x))
                 elif col in ['Jumlah', 'Jumlah 1', 'Jumlah 2']:
