@@ -107,11 +107,14 @@ def get_base_data_and_filter(start_date, end_date):
         empty_merged = pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount'])
         return empty_merged, df_coa, df_movements
 
-    # FIX UTAMA: Rename kolom 'description' sebelum merge untuk memastikan nama akhir 'description_entry'
-    df_journal_entries_final.rename(columns={'description': 'description_entry'}, inplace=True)
-
-    # Merge menggunakan suffix agar kolom description dari entry terpisah dengan line
+    # Merge menggunakan suffix. Kolom 'description' TIDAK mendapat suffix karena tidak konflik.
     df_journal_merged = df_lines.merge(df_journal_entries_final, left_on='journal_id', right_on='id', suffixes=('_line', '_entry'))
+    
+    # FIX UTAMA: Rename kolom 'description' (nama asli dari df_entries) ke 'description_entry'
+    # untuk menghindari KeyError di fungsi laporan.
+    if 'description' in df_journal_merged.columns:
+        df_journal_merged.rename(columns={'description': 'description_entry'}, inplace=True)
+    
     df_journal_merged = df_journal_merged.merge(df_coa, on='account_code')
     
     return df_journal_merged.sort_values(
@@ -168,7 +171,6 @@ def create_general_journal_report(df_journal):
     df_ju['Tanggal'] = df_ju['transaction_date'].dt.strftime('%Y-%m-%d')
     
     # Pilih dan atur ulang kolom. description_entry adalah deskripsi transaksi utama.
-    # FIX: Pastikan daftar kolom sesuai.
     df_ju = df_ju[['Tanggal', 'description_entry', 'account_code', 'account_name', 'debit_amount', 'credit_amount', 'journal_id']].copy()
     
     df_ju.columns = [
