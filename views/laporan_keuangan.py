@@ -47,10 +47,12 @@ def fetch_all_accounting_data():
     """Mengambil semua data yang diperlukan dari Supabase dan mengonversi tipe data."""
     
     try:
+        # Mengambil inventory_movements dengan join ke products untuk nama
+        inventory_response = supabase.table("inventory_movements").select("*, products(name)").execute()
+        
         journal_lines_response = supabase.table("journal_lines").select("*").execute()
         journal_entries_response = supabase.table("journal_entries").select("id, transaction_date, description, order_id").execute()
         coa_response = supabase.table("chart_of_accounts").select("*").execute()
-        inventory_response = supabase.table("inventory_movements").select("*, products(name)").execute()
         
         df_entries = pd.DataFrame(journal_entries_response.data)
         
@@ -78,7 +80,7 @@ def fetch_all_accounting_data():
 
 def get_base_data_and_filter(start_date, end_date):
     """
-    KOREKSI UTAMA: Mengambil SEMUA transaksi HINGGA tanggal akhir laporan (filter_end),
+    Mengambil SEMUA transaksi HINGGA tanggal akhir laporan (filter_end),
     untuk memastikan saldo kumulatif (termasuk Pendapatan dan Saldo Awal) terhitung.
     """
     data = fetch_all_accounting_data()
@@ -93,10 +95,9 @@ def get_base_data_and_filter(start_date, end_date):
         
     df_entries['transaction_date'] = df_entries['transaction_date'].astype('datetime64[ns]')
     
-    # Konversi filter date input ke tipe datetime
     filter_end = pd.to_datetime(end_date)
     
-    # LOGIC FIX: Filter semua transaksi yang tanggalnya KURANG DARI ATAU SAMA DENGAN tanggal akhir laporan.
+    # Filter semua transaksi yang tanggalnya KURANG DARI ATAU SAMA DENGAN tanggal akhir laporan.
     df_journal_entries_final = df_entries.loc[
         (df_entries['transaction_date'] <= filter_end)
     ].copy()
@@ -387,6 +388,59 @@ def create_cash_flow_statement_df(df_journal_merged, Net_Income):
     return pd.DataFrame(data, columns=['Deskripsi', 'Jumlah 1', 'Jumlah 2'])
 
 
+def create_inventory_movement_report(df_movements):
+    """
+    Membuat laporan pergerakan persediaan (Kartu Persediaan).
+    Menampilkan log pergerakan terperinci dengan saldo kumulatif (Qty dan Nilai).
+    """
+    if df_movements.empty or 'products' not in df_movements.columns:
+        return pd.DataFrame(columns=['Produk', 'Tanggal', 'Jenis', 'Referensi', 'Masuk Qty', 'Keluar Qty', 'Harga Satuan', 'Total Mutasi', 'Saldo Qty', 'Saldo Nilai'])
+
+    # Expand nested product name
+    df_movements['product_name'] = df_movements['products'].apply(lambda x: x.get('name') if isinstance(x, dict) else 'Unknown')
+    
+    # Sort data by date and product
+    df_movements = df_movements.sort_values(by=['movement_date', 'product_name'], ascending=[True, True])
+    
+    report_data = []
+    
+    for product_id, group in df_movements.groupby('product_id'):
+        
+        product_name = group['product_name'].iloc[0]
+        
+        # Initialize running balance
+        running_qty = 0
+        running_value = 0
+        
+        for index, row in group.iterrows():
+            qty_change = row['quantity_change']
+            unit_cost = row['unit_cost']
+            
+            # Update running balance
+            running_qty += qty_change
+            running_value += (qty_change * unit_cost)
+            
+            report_data.append({
+                "Nama Produk": product_name,
+                "Tanggal": row['movement_date'],
+                "Jenis Pergerakan": row['movement_type'],
+                "Referensi": row['reference_id'],
+                "Qty Masuk (RECEIPT)": qty_change if row['movement_type'] == 'RECEIPT' else 0,
+                "Qty Keluar (ISSUE)": abs(qty_change) if row['movement_type'] == 'ISSUE' else 0,
+                "Unit Cost": unit_cost,
+                "Total Cost": abs(qty_change * unit_cost),
+                "Balance Qty": running_qty,
+                "Balance Value (Kumulatif)": running_value,
+            })
+
+    df_report = pd.DataFrame(report_data)
+    
+    # Clean up column names for display
+    df_report.columns = ['Produk', 'Tanggal', 'Jenis', 'Referensi', 'Masuk Qty', 'Keluar Qty', 'Harga Satuan', 'Total Mutasi', 'Saldo Qty', 'Saldo Nilai']
+    
+    return df_report.sort_values(by=['Produk', 'Tanggal'])
+
+
 def to_excel_bytes(reports):
     """Menyimpan semua laporan ke dalam satu file Excel (BytesIO)"""
     output = BytesIO()
@@ -449,9 +503,8 @@ def generate_reports():
     # --- Tambahkan Laporan Arus Kas ---
     df_cash_flow = create_cash_flow_statement_df(df_journal_merged, net_income)
     
-    # --- Tambahkan laporan pendukung (Jurnal Umum & Kartu Persediaan) ---
-    df_general_journal = pd.DataFrame() # Placeholder
-    df_inventory_card = pd.DataFrame() # Placeholder
+    # --- Tambahkan Kartu Persediaan ---
+    df_inventory_card = create_inventory_movement_report(df_movements)
 
     return {
         "Laba Bersih": net_income,
@@ -461,8 +514,7 @@ def generate_reports():
         "Laporan Perubahan Modal": df_re,
         "Laporan Posisi Keuangan": df_laporan_posisi_keuangan,
         "Laporan Arus Kas": df_cash_flow,
-        "Jurnal Umum": df_general_journal,
-        "Kartu Persediaan": df_inventory_card,
+        "Kartu Persediaan": df_inventory_card, # Ditambahkan
     }
 
 
@@ -482,10 +534,10 @@ def show_reports_page():
             return f"(Rp {-amount:,.0f})".replace(",", "_").replace(".", ",").replace("_", ".")
         return f"Rp {amount:,.0f}".replace(",", "_").replace(".", ",").replace("_", ".")
 
-    def display_formatted_df(df, columns_to_format=['Debit', 'Kredit', 'TB Debit', 'TB Kredit', 'MJ Debit', 'MJ Kredit', 'TB ADJ Debit', 'TB ADJ Kredit', 'IS Debit', 'IS Kredit', 'BS Debit', 'BS Kredit', 'Jumlah', 'Total', 'Jumlah 1', 'Jumlah 2']):
+    def display_formatted_df(df, columns_to_format=['Debit', 'Kredit', 'TB Debit', 'TB Kredit', 'MJ Debit', 'MJ Kredit', 'TB ADJ Debit', 'TB ADJ Kredit', 'IS Debit', 'IS Kredit', 'BS Debit', 'BS Kredit', 'Jumlah', 'Total', 'Jumlah 1', 'Jumlah 2', 'Harga Satuan', 'Total Mutasi', 'Saldo Nilai']):
         df_display = df.copy()
         for col in columns_to_format:
-            if col in df_display.columns:
+            if col in df_display.columns and col not in ['Saldo Qty', 'Masuk Qty', 'Keluar Qty']:
                 if col in ['Jumlah', 'Jumlah 1', 'Jumlah 2'] and any(df_display[col].apply(lambda x: isinstance(x, (int, float)) and x < 0)):
                      df_display[col] = df_display[col].apply(lambda x: format_rupiah(x))
                 elif col in ['Jumlah', 'Jumlah 1', 'Jumlah 2']:
@@ -521,6 +573,11 @@ def show_reports_page():
     st.header("5. Laporan Arus Kas (Cash Flow Statement)")
     st.warning("Perhitungan Arus Kas ini disederhanakan/disimulasikan dari Jurnal Umum dan data historis Excel.")
     st.dataframe(display_formatted_df(reports["Laporan Arus Kas"], columns_to_format=['Jumlah 1', 'Jumlah 2']), use_container_width=True)
+    
+    # Tampilkan Kartu Persediaan (Urutan 6)
+    st.header("6. Kartu Persediaan (Inventory Card)")
+    st.info("Menampilkan log pergerakan unit (Masuk/Keluar) beserta biaya per unit, diambil dari tabel 'inventory_movements'.")
+    st.dataframe(display_formatted_df(reports["Kartu Persediaan"]), use_container_width=True)
     
     st.markdown("---")
 
