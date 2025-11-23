@@ -1,0 +1,47 @@
+NOMOR AKUN;NAMA AKUN
+1-0000;Aset
+1-1000;Aset Lancar
+1-1100;Kas
+1-1200;Persediaan barang dagang
+1-1300;Perlengkapan
+1-1400;Pakan lobster
+1-1500;Vitamin lobster
+1-2000;Aset Tetap
+1-2100;Tanah
+1-2200;Bangunan
+1-2210;Akumulasi Penyusutan Bangunan
+1-2300;Kendaraan
+1-2310;Akumulasi Penyusutan Kendaraan
+1-2400;Peralatan
+1-2410;Akumulasi Penyusutan Peralatan
+2-0000;Liabilitas
+2-1000;Liabilitas lancar
+2-1100;Utang Bank BRI jatuh tempo
+2-1200;Utang Pajak
+2-2000;Liabilitas jangka panjang
+2-2100;Utang Bank BRI
+3-1000;Ekuitas
+3-1100;Modal Pemilik
+3-1200;Prive pemilik
+3-1300;Ikhtisar laba/rugi
+4-0000;Pendapatan
+4-1100;Penjualan
+4-1200;Jasa angkut Penjualan
+5-0000;Harga pokok penjualan
+5-1100;Harga pokok penjualan
+6-0000;Beban operasional
+6-1100;Beban gaji
+6-1200;Beban listrik
+6-1300;Beban air
+6-1400;Beban perlengkapan
+6-1500;Beban transportasi
+6-1600;Beban Depresiasi
+6-1700;Pakan terpakai
+6-1800;Vitamin terpakai
+6-1900;Beban operasional lainnya
+8-0000;OTHER REVENUE
+8-1100;Pendapatan bunga bank
+9-0000;OTHER EXPENSE
+9-1100;Beban bunga pinjaman
+9-1200;Beban administrasi bank
+9-1300;Beban pajak penghasilan

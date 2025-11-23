@@ -1,0 +1,83 @@
+DATE;;DESCRIPTION;REF; DEBET ; CREDIT 
+;;;;;
+2025;1;Pakan lobster;1-1400; 500.000 ;
+Nov;;Kas;1-1100;; 500.000 
+;;(Pembelian pakan);;;
+;3;Kas;1-1100; 675.000 ;
+;;Penjualan;4-1100;; 675.000 
+;;Harga pokok penjualan;5-1100; 505.000 ;
+;;Persediaan barang dagang;1-1200;; 505.000 
+;;(Penjualan secara tunai);;;
+;4;Beban listrik;6-1200; 150.000 ;
+;;Kas;1-1100;; 150.000 
+;;(Pembayaran beban listrik November);;;
+;5;Perlengkapan;1-1300; 75.000 ;
+;;Kas;1-1100;; 75.000 
+;;(Pembelian perlengkapan kebersihan);;;
+;6;Beban air;6-1300; 120.000 ;
+;;Kas;1-1100;; 120.000 
+;;(Pembayaran beban air November);;;
+;8;Beban gaji;6-1100; 350.000 ;
+;;Kas;1-1100;; 350.000 
+;;(Pembayaran gaji minggu pertama);;;
+;10;Kas;1-1100; 13.600.000 ;
+;;Penjualan;4-1100;; 13.600.000 
+;;Harga pokok penjualan;5-1100; 10.200.000 ;
+;;Persediaan barang dagang;1-1200;; 10.200.000 
+;;(Penjualan secara tunai);;;
+;10;Kas;1-1100; 50.000 ;
+;;Jasa angkut Penjualan;4-1200;; 50.000 
+;;(Menerima pendapatan jasa angkut);;;
+;12;Kas;1-1100; 1.300.000 ;
+;;Penjualan;4-1100;; 1.300.000 
+;;Harga pokok penjualan;5-1100; 900.000 ;
+;;Persediaan barang dagang;1-1200;; 900.000 
+;;(Penjualan secara tunai);;;
+;14;Kas;1-1100; 7.987.500 ;
+;;Penjualan;4-1100;; 7.987.500 
+;;Harga pokok penjualan;5-1100; 6.000.000 ;
+;;Persediaan barang dagang;1-1200;; 6.000.000 
+;;(Penjualan secara tunai);;;
+;15;Beban gaji;6-1100; 350.000 ;
+;;Kas;1-1100;; 350.000 
+;;(Pembayaran gaji minggu kedua);;;
+;17;Vitamin lobster;1-1500; 200.000 ;
+;;Kas;1-1100;; 200.000 
+;;(Pembelian vitamin);;;
+;19;Beban operasional lainnya;6-1900; 500.000 ;
+;;Kas;1-1100;; 500.000 
+;;(Perbaikan kolam bocor);;;
+;20;Kas;1-1100; 4.462.500 ;
+;;Penjualan;4-1100;; 4.462.500 
+;;Harga pokok penjualan;5-1100; 3.370.000 ;
+;;Persediaan barang dagang;1-1200;; 3.370.000 
+;;(Penjualan secara tunai);;;
+;22;Beban gaji;6-1100; 350.000 ;
+;;Kas;1-1100;; 350.000 
+;;(Pembayaran gaji minggu ketiga);;;
+;23;Kas;1-1100; 850.000 ;
+;;Penjualan;4-1100;; 850.000 
+;;Harga pokok penjualan;5-1100; 600.000 ;
+;;Persediaan barang dagang;1-1200;; 600.000 
+;;(Penjualan secara tunai);;;
+;25;Kas;1-1100; 10.650.000 ;
+;;Penjualan;4-1100;; 10.650.000 
+;;Harga pokok penjualan;5-1100; 8.000.000 ;
+;;Persediaan barang dagang;1-1200;; 8.000.000 
+;;(Penjualan secara tunai);;;
+;27;Beban operasional lainnya;6-1900; 250.000 ;
+;;Kas;1-1100;; 250.000 
+;;(Pembayaran biaya pembersihan dan limbah);;;
+;28;Beban gaji;6-1100; 350.000 ;
+;;Kas;1-1100;; 350.000 
+;;(Pembayaran gaji minggu keempat);;;
+;28;1-2310;2-1100; 1.000.000 ;
+;;6-1600;8-1100; 120.000 ;
+;;Kas;1-1100;; 1.120.000 
+;;(Angsuran pinjaman bank BRI);;;
+;30;Prive pemilik;3-1200; 5.000.000 ;
+;;Kas;1-1100;; 5.000.000 
+;;(Pengambilan pribadi);;;
+;;;;;
+;;TOTAL;; 78.465.000 ; 78.465.000 
+;;;;;
