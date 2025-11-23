@@ -114,7 +114,8 @@ def import_general_journal(file_path):
         df_raw = pd.read_csv(file_path, header=6, delimiter=';', engine='python')
         
         # Slicing Kolom untuk mengambil: [DATE (0), DESCRIPTION (2), REF (3), DEBET (4), CREDIT (5)]
-        df_raw = df_raw.iloc[:, [0, 2, 3, 4, 5]].copy()
+        # PERBAIKAN: Mengambil kolom [1] (Hari) untuk 'Date'
+        df_raw = df_raw.iloc[:, [1, 2, 3, 4, 5]].copy()
         df_raw.columns = ['Date', 'Description', 'REF', 'DEBET', 'CREDIT']
         
     except Exception as e:
@@ -202,8 +203,9 @@ def import_inventory_movements(file_path):
                 qty_in = pd.to_numeric(row_str.iloc[4], errors='coerce', downcast='integer') or 0
                 cost_in = clean_rupiah_number_element(row_str.iloc[5]) 
                 
-                qty_out = pd.to_numeric(row_str.iloc[8], errors='coerce', downcast='integer') or 0
-                cost_out = clean_rupiah_number_element(row_str.iloc[9])
+                # PERBAIKAN: Mengubah indeks OUT QTY (8 ke 7) dan OUT COST (9 ke 8)
+                qty_out = pd.to_numeric(row_str.iloc[7], errors='coerce', downcast='integer') or 0
+                cost_out = clean_rupiah_number_element(row_str.iloc[8])
 
                 if qty_in > 0 and cost_in > 0:
                     movements_to_insert.append({
