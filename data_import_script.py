@@ -15,30 +15,23 @@ PRODUCT_CODE_TO_ID = {
     "C02": 6,
 }
 
-# --- FUNGSI PEMBERSIH ANGKA PALING AMAN (Element-Wise Cleaner) ---
+# --- FUNGSI PEMBERSIH ANGKA PALING AMAN (untuk Rupiah Integer) ---
 def clean_rupiah_number_element(val):
     """
-    Membersihkan string Rupiah Indonesia/Eropa (e.g., 13.600.000) menjadi float.
-    Fungsi ini diterapkan per elemen untuk robustess maksimum.
+    Membersihkan string Rupiah (misalnya '13.600.000' atau 'Rp 1.000,00') menjadi float.
+    Strategi: Hapus semua pemisah ribuan (titik/spasi) dan koma desimal, karena GJ Anda adalah angka bulat besar.
     """
     val = str(val).strip()
     if not val:
         return 0.0
     
-    # 1. Hapus semua spasi dan tanda kurung (seringkali negatif)
-    val = val.replace(' ', '').replace('(', '').replace(')', '')
+    # Hapus semua karakter non-numerik yang umum (Rp, spasi, tanda kurung)
+    val = val.replace('Rp', '').replace(' ', '').replace('(', '').replace(')', '')
 
-    # 2. Asumsi format Indonesia: Titik adalah ribuan, Koma adalah desimal.
-    if ',' in val:
-        # Menghapus titik (ribuan separator)
-        val = val.replace('.', '')
-        # Mengganti koma (desimal separator) ke titik
-        val = val.replace(',', '.')
-    else:
-        # Jika tidak ada koma, titik yang ada pasti pemisah ribuan. Hapus semua titik.
-        val = val.replace('.', '')
+    # KOREKSI FINAL: Hapus SEMUA titik dan koma. Ini hanya berfungsi jika tidak ada pecahan sen.
+    val = val.replace('.', '').replace(',', '')
     
-    # 3. Konversi ke float. Jika gagal (misalnya string sisa cleaning masih aneh), return 0.0
+    # Konversi ke float. Jika gagal, return 0.0
     try:
         return float(val)
     except ValueError:
