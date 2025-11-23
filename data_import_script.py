@@ -88,22 +88,22 @@ def import_coa(file_path):
 def import_general_journal(file_path):
     print(f"\n--- Memulai Import Jurnal Umum (GJ) dari {file_path} ---")
     
-    # Fungsi pembersihan Rupiah yang definitif
+    # Fungsi pembersihan Rupiah yang definitif (menghilangkan titik ribuan, mengganti koma desimal)
     def clean_rupiah_number(series):
         series = series.astype(str).str.strip()
         # 1. Hapus titik (Ribuan Separator)
         series = series.str.replace('.', '', regex=False)
-        # 2. Ganti koma ke titik (Decimal Separator)
+        # 2. Ganti koma desimal ke titik
         series = series.str.replace(',', '.', regex=False)
         # 3. Ganti string kosong (yang tersisa setelah cleaning) menjadi NaN, lalu ke float
         return series.replace('', np.nan).astype(float).fillna(0)
     
     try:
-        # Delimiter titik koma (;).
+        # Delimiter titik koma (;). Membaca semua kolom dan memilih berdasarkan slicing untuk robustess.
         df_raw = pd.read_csv(file_path, header=6, delimiter=';', engine='python')
         
         # Slicing Kolom untuk mengambil: [DATE (0), DESCRIPTION (2), REF (3), DEBET (4), CREDIT (5)]
-        # Ini mengatasi error out-of-bounds dan mengambil kolom yang benar.
+        # Ini mengatasi error out-of-bounds.
         df_raw = df_raw.iloc[:, [0, 2, 3, 4, 5]].copy()
         df_raw.columns = ['Date', 'Description', 'REF', 'DEBET', 'CREDIT']
         
@@ -187,9 +187,10 @@ def import_inventory_movements(file_path):
                 product_id = PRODUCT_CODE_TO_ID.get(current_product_code)
                 if not product_id: continue 
 
-                # Parsing angka Rupiah (mengganti titik ribuan dan koma desimal)
+                # Parsing angka Rupiah (menggunakan fungsi clean_rupiah_number untuk konsistensi)
                 def parse_rupiah_number(val):
-                    val = str(val).replace('Rp', '').replace('.', '').replace(',', '.', 1).strip() 
+                    # Membersihkan Rp, titik ribuan, dan mengganti koma desimal ke titik
+                    val = str(val).replace('Rp', '').replace('.', '', regex=False).replace(',', '.', 1).strip()
                     return pd.to_numeric(val, errors='coerce') or 0
 
                 qty_in = pd.to_numeric(row_str.iloc[4], errors='coerce', downcast='integer') or 0
