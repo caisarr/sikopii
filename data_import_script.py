@@ -15,28 +15,22 @@ PRODUCT_CODE_TO_ID = {
     "C02": 6,
 }
 
-# --- FUNGSI PEMBERSIH ANGKA PALING AMAN ---
-def clean_rupiah_number(val):
-    """Membersihkan string Rupiah Indonesia/Eropa (e.g., 13.600.000) menjadi float."""
-    # 1. Handle non-string/kosong
-    if pd.isna(val) or not isinstance(val, str):
-        return 0.0
-    
-    val = val.strip()
-    if not val:
-        return 0.0
 
-    # 2. Hapus titik (Thousands Separator)
-    val = val.replace('.', '')
+# --- FUNGSI PEMBERSIH ANGKA PALING AMAN (HANYA MENGHILANGKAN RIBUAN) ---
+def clean_rupiah_number_series(series):
+    """
+    Membersihkan series Rupiah. Menghapus semua karakter non-angka dan titik ribuan.
+    """
+    series = series.astype(str).str.strip()
     
-    # 3. Ganti koma (Decimal Separator) ke titik
-    val = val.replace(',', '.')
+    # Menghapus TITIK (ribuan separator) - Ini adalah penyebab utama error '13.600.000'.
+    series = series.str.replace('.', '', regex=False)
     
-    # 4. Konversi ke float, return 0.0 jika gagal
-    try:
-        return float(val)
-    except ValueError:
-        return 0.0
+    # Mengganti koma (desimal separator) ke titik (jika ada)
+    series = series.str.replace(',', '.', regex=False)
+    
+    # Mengonversi dan mengisi nilai kosong
+    return series.replace('', np.nan).astype(float).fillna(0)
 
 
 # --- 1. FUNGSI PEMBERSIHAN DATA (URUTAN YANG BENAR) ---
@@ -126,9 +120,9 @@ def import_general_journal(file_path):
     df_raw['Description'] = df_raw['Description'].ffill() 
     df_lines = df_raw.dropna(subset=['REF']).copy()
     
-    # ✅ KOREKSI FINAL VALUE ERROR UNTUK DEBET & CREDIT (Memanggil fungsi aman)
-    df_lines['DEBET'] = df_lines['DEBET'].apply(clean_rupiah_number)
-    df_lines['CREDIT'] = df_lines['CREDIT'].apply(clean_rupiah_number)
+    # ✅ KOREKSI FINAL VALUE ERROR UNTUK DEBET & CREDIT
+    df_lines['DEBET'] = clean_rupiah_number_series(df_lines['DEBET'])
+    df_lines['CREDIT'] = clean_rupiah_number_series(df_lines['CREDIT'])
     
     df_lines['full_date_str'] = df_lines['Date'].astype(str) + ' Nov 2025'
     df_lines['transaction_date'] = pd.to_datetime(df_lines['full_date_str'], format='%d %b %Y', errors='coerce').dt.normalize()
@@ -157,8 +151,7 @@ def import_general_journal(file_path):
         response = supabase.table("journal_lines").insert(lines_to_insert).execute()
         print(f"Import Journal Lines Selesai. Total {len(response.data)} baris jurnal dimasukkan.")
     else:
-        # Peringatan ini muncul jika konversi gagal total.
-        print("Peringatan: Tidak ada baris jurnal yang dimasukkan. Periksa kembali format angka di file GJ Anda.")
+        print("Peringatan: Tidak ada baris jurnal yang dimasukkan. PERIKSA KEMBALI FORMAT ANGKA FILE GJ ANDA.")
     print("Import Jurnal Umum Selesai.")
 
 # --- 4. LOGIKA IMPORT INVENTORY MOVEMENTS (Kartu Persediaan) ---
