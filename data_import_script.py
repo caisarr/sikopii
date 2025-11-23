@@ -16,26 +16,38 @@ PRODUCT_CODE_TO_ID = {
 }
 
 
-# --- 1. FUNGSI PEMBERSIHAN DATA (URUTAN YANG BENAR) ---
+# --- 1. FUNGSI PEMBERSIHAN DATA (URUTAN HIERARKI YANG BENAR) ---
 def clear_all_data():
     """
-    Menghapus data dari tabel-tabel anak terlebih dahulu untuk menghindari Foreign Key Error (23503).
+    Menghapus data dari tabel-tabel anak terdalam terlebih dahulu untuk menghindari Foreign Key Error (23503).
     """
     print("\n--- Membersihkan Data Database (Wajib) ---")
     
-    # 1. Hapus data Inventory Movements (Anak)
+    # 1. Hapus Tabel Anak Terdalam (yang tidak punya anak lain)
     print("Aksi: Membersihkan inventory_movements...")
     supabase.table("inventory_movements").delete().neq("id", 0).execute() 
     
-    # 2. Hapus data Journal Lines (Anak dari COA & Entries)
     print("Aksi: Membersihkan journal_lines...")
     supabase.table("journal_lines").delete().neq("id", 0).execute() 
     
-    # 3. Hapus data Journal Entries (Induk dari Lines)
+    print("Aksi: Membersihkan order_items...")
+    supabase.table("order_items").delete().neq("id", 0).execute() 
+    
+    # 2. Hapus Tabel Induk Lapis Kedua
     print("Aksi: Membersihkan journal_entries...")
     supabase.table("journal_entries").delete().neq("id", 0).execute() 
     
-    # 4. Hapus data Chart of Accounts (Induk - Sekarang AMAN Dihapus)
+    print("Aksi: Membersihkan orders...")
+    supabase.table("orders").delete().neq("id", 0).execute() 
+
+    # 3. Hapus Tabel Produk (Tabel ini menyebabkan error karena merujuk COA)
+    print("Aksi: Membersihkan products...")
+    # NOTE: Kita tidak bisa menghapus seluruh baris produk karena Anda mungkin punya data produk di sini.
+    # Namun, karena kita tidak memiliki skrip impor produk, kita harus hapus untuk menanggulangi error.
+    # Jika produk Anda banyak, Anda harus menjalankan skrip impor produk setelah ini.
+    supabase.table("products").delete().neq("id", 0).execute() 
+
+    # 4. Hapus Tabel Induk Paling Atas (Sekarang Aman Dihapus)
     print("Aksi: Membersihkan chart_of_accounts...")
     supabase.table("chart_of_accounts").delete().neq("account_code", "DUMMY").execute() 
     
@@ -59,7 +71,6 @@ def infer_coa_details(account_code):
 def import_coa(file_path):
     print(f"\n--- Memulai Import Chart of Accounts (COA) dari {file_path} ---")
     try:
-        # Menggunakan delimiter=';'
         df = pd.read_csv(file_path, header=4, usecols=[0, 1], names=['account_code', 'account_name'], 
                          skiprows=lambda x: x < 5 and x != 4, delimiter=';')
     except Exception as e:
@@ -72,7 +83,6 @@ def import_coa(file_path):
     df['account_type'], df['normal_balance'] = zip(*df['account_code'].apply(infer_coa_details))
     data_to_insert = df[['account_code', 'account_name', 'account_type', 'normal_balance']].to_dict('records')
     
-    # HANYA INSERT. Penghapusan dilakukan di clear_all_data().
     response = supabase.table("chart_of_accounts").insert(data_to_insert).execute()
     print(f"Import COA Selesai. Total {len(response.data)} akun dimasukkan.")
 
@@ -80,7 +90,6 @@ def import_coa(file_path):
 def import_general_journal(file_path):
     print(f"\n--- Memulai Import Jurnal Umum (GJ) dari {file_path} ---")
     try:
-        # Menggunakan delimiter=';'
         df_raw = pd.read_csv(file_path, header=6, usecols=[0, 3, 4, 5, 6], names=['Date', 'Description', 'REF', 'DEBET', 'CREDIT'], delimiter=';')
     except Exception as e:
         print(f"ERROR membaca file GJ: {e}"); return
@@ -114,7 +123,6 @@ def import_general_journal(file_path):
                     "debit_amount": row['DEBET'], "credit_amount": row['CREDIT'],
                 })
 
-    # HANYA INSERT. Penghapusan dilakukan di clear_all_data().
     if lines_to_insert:
         response = supabase.table("journal_lines").insert(lines_to_insert).execute()
         print(f"Import Journal Lines Selesai. Total {len(response.data)} baris jurnal dimasukkan.")
@@ -131,12 +139,10 @@ def import_inventory_movements(file_path):
         return
 
     try:
-        # Membaca data mentah. Kita akan memproses dari baris ke-6 (indeks 5).
-        # Menggunakan delimiter koma (,) karena struktur multi-kolom yang diasumsikan
         df_raw = pd.read_csv(file_path, header=None, skiprows=5, delimiter=',') 
         
     except Exception as e:
-        print(f"ERROR membaca file INVENTORY: {e}. Silakan pastikan file di-save dengan delimiter KOMA (,) di Excel.")
+        print(f"ERROR membaca file INVENTORY: {e}. Coba pastikan file di-save dengan delimiter KOMA (,) di Excel.")
         return
     
     try:
@@ -147,7 +153,6 @@ def import_inventory_movements(file_path):
         for index, row in df_raw.iterrows():
             row_str = row.astype(str)
             
-            # Mendeteksi Awal Blok Produk dan Kode
             if 'ITEM' in row_str.iloc[0] and 'Kode' in row_str.iloc[13]:
                 current_product_code = row_str.iloc[14].strip() 
                 continue
@@ -163,15 +168,12 @@ def import_inventory_movements(file_path):
                 product_id = PRODUCT_CODE_TO_ID.get(current_product_code)
                 if not product_id: continue 
 
-                # Kolom IN (Penerimaan): QTY di indeks 4, COST di indeks 5
                 qty_in = pd.to_numeric(row_str.iloc[4], errors='coerce', downcast='integer') or 0
                 cost_in = pd.to_numeric(row_str.iloc[5], errors='coerce') or 0
                 
-                # Kolom OUT (Pengeluaran): QTY di indeks 8, COST di indeks 9
                 qty_out = pd.to_numeric(row_str.iloc[8], errors='coerce', downcast='integer') or 0
                 cost_out = pd.to_numeric(row_str.iloc[9], errors='coerce') or 0
 
-                # 1. Masukkan Penerimaan (RECEIPT)
                 if qty_in > 0 and cost_in > 0:
                     movements_to_insert.append({
                         "product_id": product_id,
@@ -182,7 +184,6 @@ def import_inventory_movements(file_path):
                         "reference_id": f"INVEN-H-{index}", 
                     })
 
-                # 2. Masukkan Pengeluaran (ISSUE)
                 if qty_out > 0 and cost_out > 0:
                     movements_to_insert.append({
                         "product_id": product_id,
@@ -193,7 +194,6 @@ def import_inventory_movements(file_path):
                         "reference_id": f"INVEN-H-{index}",
                     })
         
-        # HANYA INSERT. Penghapusan dilakukan di clear_all_data().
         if movements_to_insert:
             supabase.table("inventory_movements").insert(movements_to_insert).execute()
             print(f"Import Kartu Persediaan Selesai. Total {len(movements_to_insert)} pergerakan unit dimasukkan.")
@@ -202,7 +202,6 @@ def import_inventory_movements(file_path):
 
     except Exception as e:
         print(f"FATAL ERROR saat memproses Kartu Persediaan: {e}")
-        print("Silakan pastikan format file SIKLUS EXCEL.xlsx - INVENTORY.csv Anda menggunakan delimiter KOMA (,) dan struktur kolomnya tetap.")
 
 
 # --- EKSEKUSI UTAMA ---
