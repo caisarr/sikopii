@@ -5,11 +5,15 @@ from io import BytesIO
 from datetime import date, timedelta
 import numpy as np
 
+# --- FORMATTING UTILITY ---
 def format_rupiah(amount):
+    """Format angka ke Rupiah. Negatif menggunakan kurung (Rp xxx)."""
     if pd.isna(amount) or amount == '': return ''
-    if amount < 0: return f"(Rp {-amount:,.0f})".replace(",", "_").replace(".", ",").replace("_", ".")
+    if amount < 0:
+        return f"(Rp {-amount:,.0f})".replace(",", "_").replace(".", ",").replace("_", ".")
     return f"Rp {amount:,.0f}".replace(",", "_").replace(".", ",").replace("_", ".")
 
+# --- DATA FETCHING ---
 @st.cache_data(ttl=60)
 def fetch_all_accounting_data():
     try:
@@ -21,18 +25,19 @@ def fetch_all_accounting_data():
         df_ent = pd.DataFrame(entries.data)
         if not df_ent.empty:
             df_ent['transaction_date'] = pd.to_datetime(df_ent['transaction_date'], errors='coerce')
-            if df_ent['transaction_date'].dt.tz is not None:
-                 df_ent['transaction_date'] = df_ent['transaction_date'].dt.tz_localize(None)
             df_ent['transaction_date'] = df_ent['transaction_date'].dt.normalize()
-        else: df_ent = pd.DataFrame(columns=['id', 'transaction_date', 'description', 'order_id'])
+        else:
+            df_ent = pd.DataFrame(columns=['id', 'transaction_date', 'description', 'order_id'])
 
         df_lines = pd.DataFrame(lines.data).fillna(0)
-        if df_lines.empty: df_lines = pd.DataFrame(columns=['journal_id', 'account_code', 'debit_amount', 'credit_amount'])
+        if df_lines.empty:
+             df_lines = pd.DataFrame(columns=['journal_id', 'account_code', 'debit_amount', 'credit_amount'])
 
         return {"lines": df_lines, "entries": df_ent, "coa": pd.DataFrame(coa.data), "mov": pd.DataFrame(inv.data)}
     except Exception as e:
-        st.error(f"Error: {e}"); return {}
+        st.error(f"Error fetching data: {e}"); return {}
 
+# --- CORE LOGIC ---
 def get_data(start, end):
     d = fetch_all_accounting_data()
     if not d: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -50,7 +55,7 @@ def get_data(start, end):
     return merged.sort_values(['transaction_date', 'journal_id', 'debit_amount'], ascending=[True, True, False]), d["coa"], d["mov"]
 
 def calc_tb(df, coa):
-    # Menghitung TB murni berdasarkan nilai Debit/Kredit
+    """Menghitung Neraca Saldo (TB) berdasarkan Saldo Netto (Debit/Kredit murni)"""
     if df.empty:
         tb = coa[['account_code', 'account_name', 'account_type']].copy()
         tb['Debit'] = 0.0; tb['Kredit'] = 0.0
@@ -61,7 +66,6 @@ def calc_tb(df, coa):
         tb['Tipe_Num'] = tb['account_code'].str[0].astype(int)
         tb['Net'] = tb['D'] - tb['C']
         
-        # FIX: Positif ke Debit, Negatif ke Kredit (Absolute)
         tb['Debit'] = tb['Net'].apply(lambda x: x if x > 0 else 0)
         tb['Kredit'] = tb['Net'].apply(lambda x: abs(x) if x < 0 else 0)
     
@@ -131,9 +135,18 @@ def generate_reports():
     
     df, coa, mov = get_data(s, e)
     
-    if not df.empty and 'journal_id' in df:
-        pre = df[df['journal_id'] < 200]; ajp = df[df['journal_id'] >= 200]
-    else: pre = df; ajp = df[0:0]
+    # --- LOGIKA BARU ---
+    # Pisahkan berdasarkan DESKRIPSI, bukan ID.
+    # Semua yang mengandung kata 'AJP' di deskripsi masuk ke MJ (Penyesuaian)
+    # Sisanya (termasuk transaksi baru ID > 205) masuk ke TB (Normal Transaction)
+    
+    if not df.empty and 'description_entry' in df:
+        # Filter case-insensitive untuk 'AJP'
+        is_ajp = df['description_entry'].str.contains('AJP', case=False, na=False)
+        pre = df[~is_ajp] # Regular (TB)
+        ajp = df[is_ajp]  # Adjustments (MJ)
+    else: 
+        pre = df; ajp = df[0:0]
     
     tb_pre = calc_tb(pre, coa); tb_ajp = calc_tb(ajp, coa)
     
@@ -142,7 +155,7 @@ def generate_reports():
     ws = ws.merge(tb_pre[['Kode Akun', 'Debit', 'Kredit']], on='Kode Akun', how='left').fillna(0).rename(columns={'Debit':'TB D', 'Kredit':'TB K'})
     ws = ws.merge(tb_ajp[['Kode Akun', 'Debit', 'Kredit']], on='Kode Akun', how='left').fillna(0).rename(columns={'Debit':'MJ D', 'Kredit':'MJ K'})
     
-    # Calc TB Adj based on Pure Math (Positive=D, Negative=C)
+    # Calculate Adjusted TB (TB ADJ)
     def calc_adj(row):
         net_tb = row['TB D'] - row['TB K']
         net_mj = row['MJ D'] - row['MJ K']
@@ -156,6 +169,7 @@ def generate_reports():
     
     inc, is_df, re_df, bs_df, ws_fin = calculate_closing_and_reporting_data(df_calc)
     
+    # Final Worksheet Display
     ws_disp = ws.merge(ws_fin[['Kode Akun', 'IS Debit', 'IS Kredit', 'BS Debit', 'BS Kredit']], on='Kode Akun', how='left')
     ws_disp.rename(columns={'Adj D': 'TB ADJ D', 'Adj K': 'TB ADJ K'}, inplace=True)
     
@@ -185,6 +199,7 @@ def calculate_closing_and_reporting_data(df_tb_adj):
     
     df_ws_final.loc[IS, 'IS Debit'] = df_ws_final['Debit']
     df_ws_final.loc[IS, 'IS Kredit'] = df_ws_final['Kredit']
+    
     df_ws_final.loc[BS, 'BS Debit'] = df_ws_final['Debit']
     df_ws_final.loc[BS, 'BS Kredit'] = df_ws_final['Kredit'] 
     
@@ -214,6 +229,7 @@ def create_income_statement_df(df_tb_adj, Total_Revenue, Total_Expense, Net_Inco
     data.append(['LABA OPERASI', '', (total_rev - total_hpp) - total_ops])
     
     data.append(['PENDAPATAN DAN BEBAN LAIN-LAIN', '', ''])
+    # Breakdown
     data.append(['Pendapatan Lain-lain:', '', ''])
     for _, r in get_rows([8], 'Kredit').iterrows(): data.append([f"  {r['Nama Akun']}", r['Kredit'], ''])
     data.append(['Beban Lain-lain:', '', ''])
@@ -294,6 +310,7 @@ def show_reports_page():
     def fmt(df):
         d = df.copy()
         for c in d.columns:
+            # Format Rupiah untuk kolom uang (KECUALI Qty)
             if any(x in c for x in ['Debit','Kredit','D','K','J','T','Nilai','Biaya']) and 'Qty' not in c:
                 d[c] = d[c].apply(lambda x: format_rupiah(x) if isinstance(x, (int,float)) else x)
         return d
