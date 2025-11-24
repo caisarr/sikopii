@@ -16,9 +16,8 @@ supabase_key = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(supabase_url, supabase_key)
 
 # --- SHARED ON ALL PAGES ---
-st.logo("assets/lobster.png")
+st.sidebar.image("assets/lobster.png", width=200) # Atur width sesuai keinginan (misal 150-300)
 st.sidebar.markdown("Dibuat oleh Kelompok 13")
-
 # --- FUNGSI AUTENTIKASI ---
 def sign_up(email, password):
     try:
