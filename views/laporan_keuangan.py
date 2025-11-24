@@ -5,15 +5,11 @@ from io import BytesIO
 from datetime import date, timedelta
 import numpy as np
 
-# --- FORMATTING UTILITY ---
 def format_rupiah(amount):
-    """Format angka ke Rupiah. Negatif menggunakan kurung (Rp xxx)."""
     if pd.isna(amount) or amount == '': return ''
-    if amount < 0:
-        return f"(Rp {-amount:,.0f})".replace(",", "_").replace(".", ",").replace("_", ".")
+    if amount < 0: return f"(Rp {-amount:,.0f})".replace(",", "_").replace(".", ",").replace("_", ".")
     return f"Rp {amount:,.0f}".replace(",", "_").replace(".", ",").replace("_", ".")
 
-# --- DATA FETCHING ---
 @st.cache_data(ttl=60)
 def fetch_all_accounting_data():
     try:
@@ -25,22 +21,18 @@ def fetch_all_accounting_data():
         df_ent = pd.DataFrame(entries.data)
         if not df_ent.empty:
             df_ent['transaction_date'] = pd.to_datetime(df_ent['transaction_date'], errors='coerce')
-            # Hapus timezone di level fetch juga untuk keamanan
             if df_ent['transaction_date'].dt.tz is not None:
                  df_ent['transaction_date'] = df_ent['transaction_date'].dt.tz_localize(None)
             df_ent['transaction_date'] = df_ent['transaction_date'].dt.normalize()
-        else:
-            df_ent = pd.DataFrame(columns=['id', 'transaction_date', 'description', 'order_id'])
+        else: df_ent = pd.DataFrame(columns=['id', 'transaction_date', 'description', 'order_id'])
 
         df_lines = pd.DataFrame(lines.data).fillna(0)
-        if df_lines.empty:
-             df_lines = pd.DataFrame(columns=['journal_id', 'account_code', 'debit_amount', 'credit_amount'])
+        if df_lines.empty: df_lines = pd.DataFrame(columns=['journal_id', 'account_code', 'debit_amount', 'credit_amount'])
 
         return {"lines": df_lines, "entries": df_ent, "coa": pd.DataFrame(coa.data), "mov": pd.DataFrame(inv.data)}
     except Exception as e:
-        st.error(f"Error fetching data: {e}"); return {}
+        st.error(f"Error: {e}"); return {}
 
-# --- CORE LOGIC ---
 def get_data(start, end):
     d = fetch_all_accounting_data()
     if not d: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -49,11 +41,7 @@ def get_data(start, end):
     if ent.empty or lines.empty:
         return pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount', 'journal_id', 'description_entry', 'id']), d["coa"], d["mov"]
     
-    # [PERBAIKAN] Handling Timezone Safe Conversion
-    ent['transaction_date'] = pd.to_datetime(ent['transaction_date'])
-    if ent['transaction_date'].dt.tz is not None:
-        ent['transaction_date'] = ent['transaction_date'].dt.tz_localize(None)
-    
+    ent['transaction_date'] = ent['transaction_date'].astype('datetime64[ns]')
     filt = ent.loc[ent['transaction_date'] <= pd.to_datetime(end)].copy()
     
     if 'description' in filt.columns: filt.rename(columns={'description': 'description_entry'}, inplace=True)
@@ -62,7 +50,7 @@ def get_data(start, end):
     return merged.sort_values(['transaction_date', 'journal_id', 'debit_amount'], ascending=[True, True, False]), d["coa"], d["mov"]
 
 def calc_tb(df, coa):
-    """Menghitung Neraca Saldo (TB) berdasarkan Saldo Netto (Debit/Kredit murni)"""
+    # Menghitung TB murni berdasarkan nilai Debit/Kredit
     if df.empty:
         tb = coa[['account_code', 'account_name', 'account_type']].copy()
         tb['Debit'] = 0.0; tb['Kredit'] = 0.0
@@ -73,7 +61,7 @@ def calc_tb(df, coa):
         tb['Tipe_Num'] = tb['account_code'].str[0].astype(int)
         tb['Net'] = tb['D'] - tb['C']
         
-        # Logika: Jika Net Positif, itu Debit. Jika Net Negatif, itu Kredit.
+        # FIX: Positif ke Debit, Negatif ke Kredit (Absolute)
         tb['Debit'] = tb['Net'].apply(lambda x: x if x > 0 else 0)
         tb['Kredit'] = tb['Net'].apply(lambda x: abs(x) if x < 0 else 0)
     
@@ -118,7 +106,6 @@ def report_gl(df, coa):
     return fin
 
 def report_inv(df):
-    """Laporan Kartu Persediaan (QTY TIDAK RP)"""
     if df.empty: return pd.DataFrame()
     if 'movement_date' in df.columns: df['movement_date'] = pd.to_datetime(df['movement_date']).dt.strftime('%Y-%m-%d')
     df['p_name'] = df['products'].apply(lambda x: x.get('name') if isinstance(x, dict) else 'Unknown')
@@ -155,7 +142,7 @@ def generate_reports():
     ws = ws.merge(tb_pre[['Kode Akun', 'Debit', 'Kredit']], on='Kode Akun', how='left').fillna(0).rename(columns={'Debit':'TB D', 'Kredit':'TB K'})
     ws = ws.merge(tb_ajp[['Kode Akun', 'Debit', 'Kredit']], on='Kode Akun', how='left').fillna(0).rename(columns={'Debit':'MJ D', 'Kredit':'MJ K'})
     
-    # Calculate Adjusted TB (TB ADJ)
+    # Calc TB Adj based on Pure Math (Positive=D, Negative=C)
     def calc_adj(row):
         net_tb = row['TB D'] - row['TB K']
         net_mj = row['MJ D'] - row['MJ K']
@@ -169,7 +156,6 @@ def generate_reports():
     
     inc, is_df, re_df, bs_df, ws_fin = calculate_closing_and_reporting_data(df_calc)
     
-    # Final Worksheet Display
     ws_disp = ws.merge(ws_fin[['Kode Akun', 'IS Debit', 'IS Kredit', 'BS Debit', 'BS Kredit']], on='Kode Akun', how='left')
     ws_disp.rename(columns={'Adj D': 'TB ADJ D', 'Adj K': 'TB ADJ K'}, inplace=True)
     
@@ -184,7 +170,10 @@ def calculate_closing_and_reporting_data(df_tb_adj):
     Total_Revenue = df_tb_adj[df_tb_adj['Tipe_Num'].isin([4, 8])]['Kredit'].sum()
     Total_Expense = df_tb_adj[df_tb_adj['Tipe_Num'].isin([5, 6, 9])]['Debit'].sum()
     prive_val = df_tb_adj[df_tb_adj['Kode Akun'] == AKUN_PRIVE]['Debit'].sum()
+    
+    # Modal Awal (Ambil dari TB Adj Kredit, sebelum ditambah Laba)
     modal_awal = df_tb_adj[df_tb_adj['Kode Akun'] == AKUN_MODAL]['Kredit'].sum()
+    
     Net_Income = Total_Revenue - Total_Expense
     Modal_Baru = modal_awal + Net_Income - prive_val
     
@@ -196,7 +185,6 @@ def calculate_closing_and_reporting_data(df_tb_adj):
     
     df_ws_final.loc[IS, 'IS Debit'] = df_ws_final['Debit']
     df_ws_final.loc[IS, 'IS Kredit'] = df_ws_final['Kredit']
-    
     df_ws_final.loc[BS, 'BS Debit'] = df_ws_final['Debit']
     df_ws_final.loc[BS, 'BS Kredit'] = df_ws_final['Kredit'] 
     
@@ -226,7 +214,6 @@ def create_income_statement_df(df_tb_adj, Total_Revenue, Total_Expense, Net_Inco
     data.append(['LABA OPERASI', '', (total_rev - total_hpp) - total_ops])
     
     data.append(['PENDAPATAN DAN BEBAN LAIN-LAIN', '', ''])
-    # Breakdown
     data.append(['Pendapatan Lain-lain:', '', ''])
     for _, r in get_rows([8], 'Kredit').iterrows(): data.append([f"  {r['Nama Akun']}", r['Kredit'], ''])
     data.append(['Beban Lain-lain:', '', ''])
@@ -307,7 +294,6 @@ def show_reports_page():
     def fmt(df):
         d = df.copy()
         for c in d.columns:
-            # Format Rupiah untuk kolom uang (KECUALI Qty)
             if any(x in c for x in ['Debit','Kredit','D','K','J','T','Nilai','Biaya']) and 'Qty' not in c:
                 d[c] = d[c].apply(lambda x: format_rupiah(x) if isinstance(x, (int,float)) else x)
         return d
