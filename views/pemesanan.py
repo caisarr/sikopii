@@ -30,7 +30,7 @@ def add_order_item(order_id, product_id, quantity, sub_total):
         "sub_total": sub_total
     }).execute()
 
-# Tampilkan produk kopi
+# Tampilkan produk 
 def show_products():
     products = get_products()
     st.title(" Pemesanan ")
