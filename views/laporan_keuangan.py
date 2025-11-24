@@ -15,186 +15,234 @@ def format_rupiah(amount):
 @st.cache_data(ttl=60)
 def fetch_all_accounting_data():
     try:
-        inventory_response = supabase.table("inventory_movements").select("*, products(name)").execute()
-        journal_lines_response = supabase.table("journal_lines").select("*").execute()
-        journal_entries_response = supabase.table("journal_entries").select("id, transaction_date, description, order_id").execute()
-        coa_response = supabase.table("chart_of_accounts").select("*").execute()
+        inv = supabase.table("inventory_movements").select("*, products(name)").execute()
+        lines = supabase.table("journal_lines").select("*").execute()
+        entries = supabase.table("journal_entries").select("id, transaction_date, description, order_id").execute()
+        coa = supabase.table("chart_of_accounts").select("*").execute()
         
-        df_entries = pd.DataFrame(journal_entries_response.data)
-        if not df_entries.empty:
-            df_entries['transaction_date'] = pd.to_datetime(df_entries['transaction_date'], errors='coerce')
-            if df_entries['transaction_date'].dt.tz is not None:
-                 df_entries['transaction_date'] = df_entries['transaction_date'].dt.tz_localize(None)
-            df_entries['transaction_date'] = df_entries['transaction_date'].dt.normalize()
-        else:
-            df_entries = pd.DataFrame(columns=['id', 'transaction_date', 'description', 'order_id'])
+        df_ent = pd.DataFrame(entries.data)
+        if not df_ent.empty:
+            df_ent['transaction_date'] = pd.to_datetime(df_ent['transaction_date'], errors='coerce')
+            if df_ent['transaction_date'].dt.tz is not None:
+                 df_ent['transaction_date'] = df_ent['transaction_date'].dt.tz_localize(None)
+            df_ent['transaction_date'] = df_ent['transaction_date'].dt.normalize()
+        else: df_ent = pd.DataFrame(columns=['id', 'transaction_date', 'description', 'order_id'])
 
-        df_lines = pd.DataFrame(journal_lines_response.data).fillna(0)
-        if df_lines.empty:
-             df_lines = pd.DataFrame(columns=['journal_id', 'account_code', 'debit_amount', 'credit_amount'])
+        df_lines = pd.DataFrame(lines.data).fillna(0)
+        if df_lines.empty: df_lines = pd.DataFrame(columns=['journal_id', 'account_code', 'debit_amount', 'credit_amount'])
 
-        return {
-            "journal_lines": df_lines, "journal_entries": df_entries,
-            "coa": pd.DataFrame(coa_response.data), "inventory_movements": pd.DataFrame(inventory_response.data),
-        }
+        return {"lines": df_lines, "entries": df_ent, "coa": pd.DataFrame(coa.data), "mov": pd.DataFrame(inv.data)}
     except Exception as e:
-        st.error(f"Gagal mengambil data dari Supabase: {e}")
-        return {
-            "journal_lines": pd.DataFrame(), "journal_entries": pd.DataFrame(),
-            "coa": pd.DataFrame(columns=['account_code', 'account_name', 'account_type', 'normal_balance']),
-            "inventory_movements": pd.DataFrame(),
-        }
+        st.error(f"Error fetching data: {e}"); return {}
 
-def get_base_data_and_filter(start_date, end_date):
-    data = fetch_all_accounting_data()
-    df_lines = data["journal_lines"]; df_entries = data["journal_entries"].copy()
-    df_coa = data["coa"]; df_movements = data["inventory_movements"]
+def get_data(start, end):
+    d = fetch_all_accounting_data()
+    if not d: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
-    if df_entries.empty or df_lines.empty:
-        return pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount', 'journal_id', 'description_entry', 'id']), df_coa, df_movements
-        
-    df_entries['transaction_date'] = df_entries['transaction_date'].astype('datetime64[ns]')
-    filter_end = pd.to_datetime(end_date)
+    ent = d["entries"].copy(); lines = d["lines"]
+    if ent.empty or lines.empty:
+        return pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount', 'journal_id', 'description_entry', 'id']), d["coa"], d["mov"]
     
-    df_filtered_entries = df_entries.loc[(df_entries['transaction_date'] <= filter_end)].copy()
-    if df_filtered_entries.empty:
-        return pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount', 'journal_id', 'description_entry', 'id']), df_coa, df_movements
-
-    if 'description' in df_filtered_entries.columns:
-        df_filtered_entries.rename(columns={'description': 'description_entry'}, inplace=True)
-
-    df_journal_merged = df_lines.merge(df_filtered_entries, left_on='journal_id', right_on='id', suffixes=('_line', '_entry'))
-    df_journal_merged = df_journal_merged.merge(df_coa, on='account_code')
+    ent['transaction_date'] = ent['transaction_date'].astype('datetime64[ns]')
+    filt = ent.loc[ent['transaction_date'] <= pd.to_datetime(end)].copy()
     
-    return df_journal_merged.sort_values(by=['transaction_date', 'journal_id', 'debit_amount'], ascending=[True, True, False]), df_coa, df_movements
+    if 'description' in filt.columns: filt.rename(columns={'description': 'description_entry'}, inplace=True)
+    merged = lines.merge(filt, left_on='journal_id', right_on='id', suffixes=('_line', '_entry'))
+    merged = merged.merge(d["coa"], on='account_code')
+    return merged.sort_values(['transaction_date', 'journal_id', 'debit_amount'], ascending=[True, True, False]), d["coa"], d["mov"]
 
-def calculate_trial_balance(df_journal, df_coa):
-    if df_journal.empty:
-        df_tb = df_coa[['account_code', 'account_name', 'account_type']].copy()
-        df_tb['Debit'] = 0.0; df_tb['Kredit'] = 0.0
-        df_tb['Tipe_Num'] = df_tb['account_code'].astype(str).str[0].apply(lambda x: int(x) if x.isdigit() else 0)
+def calc_tb(df, coa):
+    if df.empty:
+        tb = coa[['account_code', 'account_name', 'account_type']].copy()
+        tb['Debit'] = 0.0; tb['Kredit'] = 0.0
+        tb['Tipe_Num'] = tb['account_code'].str[0].apply(lambda x: int(x) if x.isdigit() else 0)
     else:
-        df_tb = df_journal.groupby('account_code').agg(Total_Debit=('debit_amount', 'sum'), Total_Kredit=('credit_amount', 'sum')).reset_index()
-        df_tb = df_tb.merge(df_coa, on='account_code', how='right').fillna(0)
-        df_tb['Tipe_Num'] = df_tb['account_code'].astype(str).str[0].astype(int) 
-        df_tb['Saldo Bersih'] = df_tb['Total_Debit'] - df_tb['Total_Kredit']
-        df_tb['Debit'] = df_tb.apply(lambda row: row['Saldo Bersih'] if row['normal_balance'] == 'Debit' and row['Saldo Bersih'] >= 0 else -row['Saldo Bersih'] if row['normal_balance'] == 'Credit' and row['Saldo Bersih'] < 0 else 0, axis=1)
-        df_tb['Kredit'] = df_tb.apply(lambda row: row['Saldo Bersih'] if row['normal_balance'] == 'Credit' and row['Saldo Bersih'] >= 0 else -row['Saldo Bersih'] if row['normal_balance'] == 'Debit' and row['Saldo Bersih'] < 0 else 0, axis=1)
-        
-    df_tb = df_tb[['account_code', 'account_name', 'account_type', 'Debit', 'Kredit', 'Tipe_Num']].sort_values(by='account_code')
-    df_tb.columns = ['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Debit', 'Kredit', 'Tipe_Num']
-    return df_tb
-
-def create_general_journal_report(df_journal):
-    if df_journal.empty: return pd.DataFrame(columns=['Tanggal', 'Kode Akun', 'Nama Akun', 'Deskripsi Transaksi', 'Debit', 'Kredit'])
-    df_ju = df_journal.sort_values(by=['transaction_date', 'journal_id', 'debit_amount'], ascending=[True, True, False]).copy()
-    df_ju['Tanggal'] = df_ju['transaction_date'].dt.strftime('%Y-%m-%d')
-    if 'description_entry' not in df_ju.columns: df_ju['description_entry'] = ''
-    df_ju = df_ju[['Tanggal', 'description_entry', 'account_code', 'account_name', 'debit_amount', 'credit_amount', 'journal_id']].copy()
-    df_ju.columns = ['Tanggal', 'Deskripsi Transaksi', 'Kode Akun', 'Nama Akun', 'Debit', 'Kredit', 'Ref Jurnal']
-    df_ju['Nama Akun'] = df_ju.apply(lambda row: f"       {row['Nama Akun']}" if row['Debit'] == 0 else row['Nama Akun'], axis=1)
-    is_first_row = df_ju.groupby('Ref Jurnal').cumcount() == 0
-    df_ju['Tanggal'] = np.where(is_first_row, df_ju['Tanggal'], '')
-    df_ju['Deskripsi Transaksi'] = np.where(is_first_row, df_ju['Deskripsi Transaksi'], '')
-    return df_ju[['Tanggal', 'Kode Akun', 'Nama Akun', 'Deskripsi Transaksi', 'Debit', 'Kredit']].reset_index(drop=True)
-
-def create_general_ledger_report(df_journal, df_coa):
-    if df_journal.empty: return pd.DataFrame(columns=['Kode Akun', 'Nama Akun', 'Tanggal', 'Keterangan', 'Ref', 'Debit', 'Kredit', 'Saldo Debet', 'Saldo Kredit'])
-    df_gl_data = []
-    for account_code, group in df_journal.groupby('account_code'):
-        coa_rows = df_coa[df_coa['account_code'] == account_code]
-        if coa_rows.empty: continue
-        coa_info = coa_rows.iloc[0]
-        group = group.sort_values(by=['transaction_date', 'journal_id', 'debit_amount'], ascending=[True, True, False]).copy()
-        running_balance = 0.0
-        for _, row in group.iterrows():
-            debit = row['debit_amount']; credit = row['credit_amount']
-            running_balance += (debit - credit) if coa_info['normal_balance'] == 'Debit' else (credit - debit)
-            df_gl_data.append({'Kode Akun': account_code, 'Nama Akun': coa_info['account_name'], 'Tanggal': row['transaction_date'], 'Keterangan': row.get('description_entry', 'Detail'), 'Ref': row['journal_id'], 'Debit': debit, 'Kredit': credit, 'Saldo': running_balance})
-    df_gl = pd.DataFrame(df_gl_data)
-    if df_gl.empty: return pd.DataFrame()
-    df_gl['Tanggal'] = df_gl['Tanggal'].dt.strftime('%Y-%m-%d')
-    df_gl = df_gl.merge(df_coa[['account_code', 'normal_balance']], left_on='Kode Akun', right_on='account_code', how='left').drop(columns=['account_code'])
-    df_gl['Saldo Debet'] = df_gl.apply(lambda row: row['Saldo'] if row['normal_balance'] == 'Debit' and row['Saldo'] >= 0 else (-row['Saldo'] if row['normal_balance'] == 'Credit' and row['Saldo'] < 0 else 0), axis=1)
-    df_gl['Saldo Kredit'] = df_gl.apply(lambda row: row['Saldo'] if row['normal_balance'] == 'Credit' and row['Saldo'] >= 0 else (-row['Saldo'] if row['normal_balance'] == 'Debit' and row['Saldo'] < 0 else 0), axis=1)
-    df_gl_final = df_gl[['Kode Akun', 'Nama Akun', 'Tanggal', 'Keterangan', 'Ref', 'Debit', 'Kredit', 'Saldo Debet', 'Saldo Kredit']].sort_values(by=['Kode Akun', 'Tanggal']).reset_index(drop=True)
-    is_first = df_gl_final.groupby('Kode Akun').cumcount() == 0
-    df_gl_final['Kode Akun'] = np.where(is_first, df_gl_final['Kode Akun'], '')
-    df_gl_final['Nama Akun'] = np.where(is_first, df_gl_final['Nama Akun'], '')
-    return df_gl_final
-
-def calculate_closing_and_reporting_data(df_tb_adj):
-    AKUN_MODAL = '3-1100'; AKUN_PRIVE = '3-1200'
-    Total_Revenue = df_tb_adj[df_tb_adj['Tipe_Num'].isin([4, 8])]['Kredit'].sum()
-    Total_Expense = df_tb_adj[df_tb_adj['Tipe_Num'].isin([5, 6, 9])]['Debit'].sum()
-    prive_val = df_tb_adj[df_tb_adj['Kode Akun'] == AKUN_PRIVE]['Debit'].sum()
-    modal_awal = df_tb_adj[df_tb_adj['Kode Akun'] == AKUN_MODAL]['Kredit'].sum()
-    Net_Income = Total_Revenue - Total_Expense
-    Modal_Baru = modal_awal + Net_Income - prive_val
+        tb = df.groupby('account_code').agg(D=('debit_amount', 'sum'), C=('credit_amount', 'sum')).reset_index()
+        tb = tb.merge(coa, on='account_code', how='right').fillna(0)
+        tb['Tipe_Num'] = tb['account_code'].str[0].astype(int)
+        tb['Net'] = tb['D'] - tb['C']
+        tb['Debit'] = tb.apply(lambda r: r['Net'] if r['normal_balance']=='Debit' and r['Net']>=0 else -r['Net'] if r['normal_balance']=='Credit' and r['Net']<0 else 0, axis=1)
+        tb['Kredit'] = tb.apply(lambda r: r['Net'] if r['normal_balance']=='Credit' and r['Net']>=0 else -r['Net'] if r['normal_balance']=='Debit' and r['Net']<0 else 0, axis=1)
     
-    df_ws_final = df_tb_adj.copy()
-    df_ws_final['IS Debit'] = 0.0; df_ws_final['IS Kredit'] = 0.0; df_ws_final['BS Debit'] = 0.0; df_ws_final['BS Kredit'] = 0.0
-    df_ws_final.loc[df_ws_final['Tipe_Num'].isin([4, 5, 6, 8, 9]), 'IS Debit'] = df_ws_final['Debit']
-    df_ws_final.loc[df_ws_final['Tipe_Num'].isin([4, 5, 6, 8, 9]), 'IS Kredit'] = df_ws_final['Kredit']
-    df_ws_final.loc[df_ws_final['Tipe_Num'].isin([1, 2, 3]), 'BS Debit'] = df_ws_final['Debit']
-    df_ws_final.loc[df_ws_final['Kode Akun'] == AKUN_MODAL, 'BS Kredit'] = Modal_Baru
-    df_ws_final.loc[(df_ws_final['Tipe_Num'].isin([1, 2])) | (df_ws_final['Kode Akun'] == AKUN_PRIVE), 'BS Kredit'] = df_ws_final['Kredit']
-    
-    df_is = create_income_statement_df(df_tb_adj, Total_Revenue, Total_Expense, Net_Income)
-    df_re = pd.DataFrame({'Deskripsi': ['Modal Awal', 'Laba Bersih Periode', 'Prive', 'Modal Akhir'], 'Jumlah': [modal_awal, Net_Income, -prive_val, Modal_Baru]})
-    df_bs = create_balance_sheet_df(df_tb_adj, Modal_Baru)
-    return Net_Income, df_is, df_re, df_bs, df_ws_final
+    return tb[['account_code', 'account_name', 'account_type', 'Debit', 'Kredit', 'Tipe_Num']].rename(columns={'account_code':'Kode Akun', 'account_name':'Nama Akun', 'account_type':'Tipe'}).sort_values('Kode Akun')
 
-def create_income_statement_df(df_tb_adj, Total_Revenue, Total_Expense, Net_Income):
+def report_gj(df):
+    if df.empty: return pd.DataFrame(columns=['Tanggal', 'Deskripsi', 'Kode Akun', 'Nama Akun', 'Debit', 'Kredit'])
+    df = df.sort_values(['transaction_date', 'journal_id', 'debit_amount'], ascending=[True, True, False]).copy()
+    df['Tanggal'] = df['transaction_date'].dt.strftime('%Y-%m-%d')
+    df['Nama Akun'] = df.apply(lambda r: f"       {r['account_name']}" if r['debit_amount']==0 else r['account_name'], axis=1)
+    is_first = df.groupby('journal_id').cumcount() == 0
+    df['Tanggal'] = np.where(is_first, df['Tanggal'], '')
+    df['description_entry'] = np.where(is_first, df['description_entry'], '')
+    return df[['Tanggal', 'account_code', 'Nama Akun', 'description_entry', 'debit_amount', 'credit_amount']].rename(columns={'account_code':'Kode Akun', 'description_entry':'Deskripsi', 'debit_amount':'Debit', 'credit_amount':'Kredit'})
+
+def report_gl(df, coa):
+    if df.empty: return pd.DataFrame()
     data = []
-    df_is = df_tb_adj[df_tb_adj['Tipe_Num'].isin([4, 5, 6, 8, 9])].copy()
-    def get_sum(tipe, col): return df_is[df_is['Tipe_Num'].isin(tipe)][col].sum()
-    def get_rows(tipe, col): return df_is[df_is['Tipe_Num'].isin(tipe)].sort_values(by='Kode Akun')
+    for ac, grp in df.groupby('account_code'):
+        if coa[coa['account_code']==ac].empty: continue
+        info = coa[coa['account_code']==ac].iloc[0]
+        grp = grp.sort_values(['transaction_date', 'journal_id', 'debit_amount'], ascending=[True, True, False])
+        bal = 0
+        for _, r in grp.iterrows():
+            bal += (r['debit_amount'] - r['credit_amount']) if info['normal_balance']=='Debit' else (r['credit_amount'] - r['debit_amount'])
+            data.append({'Kode': ac, 'Nama': info['account_name'], 'Tgl': r['transaction_date'], 'Ket': r.get('description_entry',''), 'Debit': r['debit_amount'], 'Kredit': r['credit_amount'], 'Saldo': bal})
+    
+    res = pd.DataFrame(data)
+    if res.empty: return res
+    res['Tgl'] = res['Tgl'].dt.strftime('%Y-%m-%d')
+    res = res.merge(coa[['account_code', 'normal_balance']], left_on='Kode', right_on='account_code', how='left')
+    res['Saldo D'] = res.apply(lambda r: r['Saldo'] if r['normal_balance']=='Debit' and r['Saldo']>=0 else (-r['Saldo'] if r['normal_balance']=='Credit' and r['Saldo']<0 else 0), axis=1)
+    res['Saldo K'] = res.apply(lambda r: r['Saldo'] if r['normal_balance']=='Credit' and r['Saldo']>=0 else (-r['Saldo'] if r['normal_balance']=='Debit' and r['Saldo']<0 else 0), axis=1)
+    fin = res[['Kode', 'Nama', 'Tgl', 'Ket', 'Debit', 'Kredit', 'Saldo D', 'Saldo K']].sort_values(['Kode', 'Tgl'])
+    is_fst = fin.groupby('Kode').cumcount() == 0
+    fin['Kode'] = np.where(is_fst, fin['Kode'], '')
+    fin['Nama'] = np.where(is_fst, fin['Nama'], '')
+    return fin
 
-    data.append(['PENDAPATAN', '', '']); total_rev = get_sum([4], 'Kredit')
-    for _, r in get_rows([4], 'Kredit').iterrows(): data.append([r['Nama Akun'], r['Kredit'], ''])
-    data.append(['TOTAL PENDAPATAN', '', total_rev])
-    
-    data.append(['HARGA POKOK PENJUALAN', '', '']); total_hpp = get_sum([5], 'Debit')
-    for _, r in get_rows([5], 'Debit').iterrows(): data.append([r['Nama Akun'], r['Debit'], ''])
-    data.append(['TOTAL COST OF GOODS SOLD', '', total_hpp])
-    data.append(['LABA KOTOR', '', total_rev - total_hpp])
-    
-    data.append(['BEBAN OPERASIONAL', '', '']); total_ops = get_sum([6], 'Debit')
-    for _, r in get_rows([6], 'Debit').iterrows(): data.append([r['Nama Akun'], r['Debit'], ''])
-    data.append(['TOTAL BEBAN OPERASIONAL', '', total_ops])
-    data.append(['LABA OPERASI', '', (total_rev - total_hpp) - total_ops])
-    
-    data.append(['PENDAPATAN DAN BEBAN LAIN-LAIN', '', ''])
-    for _, r in get_rows([8], 'Kredit').iterrows(): data.append([r['Nama Akun'], r['Kredit'], ''])
-    for _, r in get_rows([9], 'Debit').iterrows(): data.append([r['Nama Akun'], -r['Debit'], ''])
-    net_lain = get_sum([8], 'Kredit') - get_sum([9], 'Debit')
-    data.append(['TOTAL PENDAPATAN & BEBAN LAIN', '', net_lain])
-    data.append(['LABA BERSIH', '', Net_Income])
-    return pd.DataFrame(data, columns=['Deskripsi', 'Jumlah', 'Total'])
+def report_inv(df):
+    if df.empty: return pd.DataFrame()
+    if 'movement_date' in df.columns: df['movement_date'] = pd.to_datetime(df['movement_date']).dt.strftime('%Y-%m-%d')
+    df['p_name'] = df['products'].apply(lambda x: x.get('name') if isinstance(x, dict) else 'Unknown')
+    data = []
+    for pid, grp in df.groupby('product_id'):
+        pname = grp['p_name'].iloc[0]; qty = 0; val = 0
+        for _, r in grp.sort_values(['movement_date']).iterrows():
+            q = r['quantity_change']; c = r['unit_cost']
+            qty += q; val += (q * c)
+            data.append({'Produk': pname, 'Tanggal': r['movement_date'], 'Jenis': r['movement_type'], 'Ref': r['reference_id'], 
+                         'Masuk': q if r['movement_type']=='RECEIPT' else 0, 'Keluar': abs(q) if r['movement_type']=='ISSUE' else 0,
+                         'Biaya': c, 'Total': abs(q*c), 'Sisa Qty': qty, 'Sisa Nilai': val})
+    res = pd.DataFrame(data)
+    if res.empty: return res
+    is_fst = res.groupby('Produk').cumcount() == 0
+    res['Produk'] = np.where(is_fst, res['Produk'], '')
+    return res
 
-def create_balance_sheet_df(df_tb_adj, Modal_Akhir):
-    data = []; df_bs = df_tb_adj[df_tb_adj['Tipe_Num'].isin([1, 2])].copy()
-    data.append(['ASET', '', '']); data.append(['Aset Lancar', '', ''])
-    df_ca = df_bs[df_bs['Kode Akun'].str.startswith('1-1')]
-    for _, r in df_ca.iterrows(): data.append([r['Nama Akun'], r['Debit'] - r['Kredit'], ''])
-    total_ca = df_ca['Debit'].sum() - df_ca['Kredit'].sum(); data.append(['TOTAL ASET LANCAR', '', total_ca])
+def generate_reports():
+    # [PERBAIKAN] Set Default Filter Tanggal: 31 Okt 2025 s/d 31 Des 2025
+    if "end_date" not in st.session_state: st.session_state.end_date = date(2025, 12, 31)
+    if "start_date" not in st.session_state: st.session_state.start_date = date(2025, 10, 31)
     
-    data.append(['Aset Tetap', '', ''])
-    df_fa = df_bs[df_bs['Kode Akun'].str.startswith('1-2')]
-    for _, r in df_fa.iterrows(): data.append([r['Nama Akun'], r['Debit'] - r['Kredit'], ''])
-    total_fa = df_fa['Debit'].sum() - df_fa['Kredit'].sum(); data.append(['TOTAL ASET TETAP', '', total_fa])
-    data.append(['TOTAL ASET', '', total_ca + total_fa])
+    s = st.sidebar.date_input("Mulai", st.session_state.start_date)
+    e = st.sidebar.date_input("Akhir", st.session_state.end_date)
     
-    data.append(['LIABILITAS & EKUITAS', '', '']); data.append(['Liabilitas', '', ''])
-    df_liab = df_bs[df_bs['Kode Akun'].str.startswith('2')]
-    for _, r in df_liab.iterrows(): data.append([r['Nama Akun'], r['Kredit'] - r['Debit'], ''])
-    total_liab = df_liab['Kredit'].sum() - df_liab['Debit'].sum(); data.append(['TOTAL LIABILITAS', '', total_liab])
-    data.append(['Ekuitas', '', '']); data.append(['Modal Pemilik Akhir', '', Modal_Akhir])
-    data.append(['TOTAL LIABILITAS & EKUITAS', '', total_liab + Modal_Akhir])
-    return pd.DataFrame(data, columns=['Deskripsi', 'Jumlah 1', 'Jumlah 2'])
+    df, coa, mov = get_data(s, e)
+    
+    # Split Data
+    if not df.empty and 'journal_id' in df:
+        pre = df[df['journal_id'] < 200]; ajp = df[df['journal_id'] >= 200]
+    else: pre = df; ajp = df[0:0]
+    
+    # Calc TBs
+    tb_pre = calc_tb(pre, coa); tb_ajp = calc_tb(ajp, coa)
+    
+    # Worksheet Logic
+    ws = coa[['account_code', 'account_name', 'account_type', 'normal_balance']].copy()
+    ws.columns = ['Kode Akun', 'Nama Akun', 'Tipe', 'Normal']
+    ws = ws.merge(tb_pre[['Kode Akun', 'Debit', 'Kredit']], on='Kode Akun', how='left').fillna(0).rename(columns={'Debit':'TB D', 'Kredit':'TB K'})
+    ws = ws.merge(tb_ajp[['Kode Akun', 'Debit', 'Kredit']], on='Kode Akun', how='left').fillna(0).rename(columns={'Debit':'MJ D', 'Kredit':'MJ K'})
+    
+    ws['Adj D'] = ws.apply(lambda r: max(0, (r['TB D']-r['TB K']) + (r['MJ D']-r['MJ K'])) if r['Normal']=='Debit' else max(0, -((r['TB D']-r['TB K']) + (r['MJ D']-r['MJ K']))), axis=1)
+    ws['Adj K'] = ws.apply(lambda r: max(0, -((r['TB D']-r['TB K']) + (r['MJ D']-r['MJ K']))) if r['Normal']=='Debit' else max(0, ((r['TB D']-r['TB K']) + (r['MJ D']-r['MJ K']))), axis=1)
+    
+    # Financials
+    # Income Statement (4,5,6,8,9)
+    is_rows = ws[ws['Kode Akun'].str[0].isin(['4','5','6','8','9'])].copy()
+    rev = is_rows[is_rows['Kode Akun'].str[0].isin(['4','8'])]['Adj K'].sum()
+    exp = is_rows[is_rows['Kode Akun'].str[0].isin(['5','6','9'])]['Adj D'].sum()
+    net_inc = rev - exp
+    
+    # Retained Earnings
+    modal = ws[ws['Kode Akun']=='3-1100']['TB K'].sum() # Modal Awal dari TB
+    prive = ws[ws['Kode Akun']=='3-1200']['Adj D'].sum()
+    modal_akhir = modal + net_inc - prive
+    
+    # Balance Sheet (1,2,3)
+    ws['IS D'] = 0.0; ws['IS K'] = 0.0; ws['BS D'] = 0.0; ws['BS K'] = 0.0
+    
+    ws.loc[ws['Kode Akun'].str[0].isin(['4','5','6','8','9']), 'IS D'] = ws['Adj D']
+    ws.loc[ws['Kode Akun'].str[0].isin(['4','5','6','8','9']), 'IS K'] = ws['Adj K']
+    
+    ws.loc[ws['Kode Akun'].str[0].isin(['1','2','3']), 'BS D'] = ws['Adj D']
+    ws.loc[ws['Kode Akun'].str[0].isin(['1','2']), 'BS K'] = ws['Adj K']
+    ws.loc[ws['Kode Akun']=='3-1100', 'BS K'] = modal_akhir # Override Modal di BS Display
+    ws.loc[ws['Kode Akun']=='3-1200', 'BS D'] = 0 # Prive sudah masuk modal akhir
+    
+    # Reports DataFrames
+    # IS
+    is_data = [['PENDAPATAN', '', '']]
+    for _, r in is_rows[is_rows['Kode Akun'].str.startswith('4')].iterrows(): is_data.append([r['Nama Akun'], r['Adj K'], ''])
+    is_data.append(['Total Pendapatan', '', is_rows[is_rows['Kode Akun'].str.startswith('4')]['Adj K'].sum()])
+    is_data.append(['HPP', '', ''])
+    for _, r in is_rows[is_rows['Kode Akun'].str.startswith('5')].iterrows(): is_data.append([r['Nama Akun'], r['Adj D'], ''])
+    hpp = is_rows[is_rows['Kode Akun'].str.startswith('5')]['Adj D'].sum()
+    is_data.append(['Total HPP', '', hpp])
+    is_data.append(['LABA KOTOR', '', is_rows[is_rows['Kode Akun'].str.startswith('4')]['Adj K'].sum() - hpp])
+    is_data.append(['BEBAN', '', ''])
+    for _, r in is_rows[is_rows['Kode Akun'].str.startswith('6')].iterrows(): is_data.append([r['Nama Akun'], r['Adj D'], ''])
+    is_data.append(['Total Beban', '', is_rows[is_rows['Kode Akun'].str.startswith('6')]['Adj D'].sum()])
+    is_data.append(['LAIN-LAIN', '', ''])
+    other_rev = is_rows[is_rows['Kode Akun'].str.startswith('8')]['Adj K'].sum()
+    other_exp = is_rows[is_rows['Kode Akun'].str.startswith('9')]['Adj D'].sum()
+    is_data.append(['Total Lain-lain', '', other_rev - other_exp])
+    is_data.append(['LABA BERSIH', '', net_inc])
+    
+    # BS
+    bs_rows = ws[ws['Kode Akun'].str[0].isin(['1','2','3'])].copy()
+    bs_data = [['ASET', '', '']]
+    for _, r in bs_rows[bs_rows['Kode Akun'].str.startswith('1')].iterrows(): 
+        val = r['Adj D'] - r['Adj K']
+        bs_data.append([r['Nama Akun'], val, ''])
+    bs_data.append(['TOTAL ASET', '', bs_rows[bs_rows['Kode Akun'].str.startswith('1')]['Adj D'].sum() - bs_rows[bs_rows['Kode Akun'].str.startswith('1')]['Adj K'].sum()])
+    
+    bs_data.append(['LIABILITAS & EKUITAS', '', ''])
+    liab = bs_rows[bs_rows['Kode Akun'].str.startswith('2')]
+    for _, r in liab.iterrows(): bs_data.append([r['Nama Akun'], r['Adj K'] - r['Adj D'], ''])
+    bs_data.append(['Total Liabilitas', '', liab['Adj K'].sum() - liab['Adj D'].sum()])
+    bs_data.append(['Modal Akhir', '', modal_akhir])
+    bs_data.append(['TOTAL LIAB & EKUITAS', '', (liab['Adj K'].sum() - liab['Adj D'].sum()) + modal_akhir])
 
-def create_cash_flow_detailed(df_journal):
+    return {
+        "JU": report_gj(df), "BB": report_gl(df, coa), "Kartu": report_inv(mov),
+        "WS": ws.drop(columns=['Tipe', 'Normal']),
+        "IS": pd.DataFrame(is_data, columns=['D', 'J', 'T']),
+        "BS": pd.DataFrame(bs_data, columns=['D', 'J', 'T']),
+        "RE": pd.DataFrame({'D': ['Modal Awal', 'Laba Bersih', 'Prive', 'Modal Akhir'], 'J': [modal, net_inc, -prive, modal_akhir]})
+    }
+
+def show_reports_page():
+    st.title("📊 Laporan Keuangan")
+    if st.sidebar.button("🔄 Refresh"): st.cache_data.clear(); st.rerun()
+    rep = generate_reports()
+    
+    def fmt(df):
+        d = df.copy()
+        for c in d.columns:
+            # Filter kolom yang harus format Rupiah (Saldo Qty excluded)
+            if any(x in c for x in ['Debit','Kredit','D','K','J','T','Nilai','Biaya']) and 'Qty' not in c:
+                d[c] = d[c].apply(lambda x: format_rupiah(x) if isinstance(x, (int,float)) else x)
+        return d
+
+    st.header("1. Jurnal Umum"); st.dataframe(fmt(rep["JU"]), hide_index=True, use_container_width=True)
+    st.header("2. Buku Besar"); st.dataframe(fmt(rep["BB"]), hide_index=True, use_container_width=True)
+    st.header("3. Worksheet"); st.dataframe(fmt(rep["WS"]), hide_index=True, use_container_width=True)
+    
+    c1, c2 = st.columns(2)
+    with c1: st.header("4. Laba Rugi"); st.dataframe(fmt(rep["IS"]), hide_index=True, use_container_width=True)
+    with c2: st.header("5. Perubahan Modal"); st.dataframe(fmt(rep["RE"]), hide_index=True, use_container_width=True)
+    
+    st.header("6. Posisi Keuangan"); st.dataframe(fmt(rep["BS"]), hide_index=True, use_container_width=True)
+    st.header("7. Arus Kas"); st.dataframe(fmt(create_cashflow(get_data(st.session_state.start_date, st.session_state.end_date)[0])), hide_index=True, use_container_width=True)
+    st.header("8. Kartu Persediaan"); st.dataframe(fmt(rep["Kartu"]), hide_index=True, use_container_width=True)
+    
+    out = BytesIO()
+    with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
+        for k, v in rep.items(): v.to_excel(writer, sheet_name=k, index=False)
+    st.download_button("📥 Excel", data=out.getvalue(), file_name="Laporan.xlsx")
+
+# Helper for CF needed here because it wasn't in the main return
+def create_cashflow(df_journal):
     if df_journal.empty: return pd.DataFrame(columns=['Deskripsi', 'Jumlah', 'Total'])
     df_cash = df_journal[df_journal['account_code'] == '1-1100'].copy()
     op_in, op_out, inv, fin = [], [], [], []
@@ -226,108 +274,4 @@ def create_cash_flow_detailed(df_journal):
     data.append(['KENAIKAN (PENURUNAN) BERSIH KAS', '', (t_op_in + t_op_out) + t_inv + t_fin])
     return pd.DataFrame(data, columns=['Deskripsi', 'Jumlah', 'Total'])
 
-def create_inventory_movement_report(df_movements):
-    if df_movements.empty: return pd.DataFrame()
-    if 'movement_date' in df_movements.columns: df_movements['movement_date'] = pd.to_datetime(df_movements['movement_date']).dt.strftime('%Y-%m-%d')
-    df_movements['product_name'] = df_movements['products'].apply(lambda x: x.get('name') if isinstance(x, dict) else 'Unknown')
-    df_movements = df_movements.sort_values(by=['movement_date', 'product_name'], ascending=[True, True])
-    
-    report_data = []
-    for product_id, group in df_movements.groupby('product_id'):
-        product_name = group['product_name'].iloc[0]
-        running_qty = 0; running_value = 0
-        for _, row in group.iterrows():
-            qty = row['quantity_change']; cost = row['unit_cost']
-            running_qty += qty; running_value += (qty * cost)
-            report_data.append({
-                "Nama Produk": product_name, "Tanggal": row['movement_date'], "Jenis": row['movement_type'],
-                "Ref": row['reference_id'], "Masuk": qty if row['movement_type'] == 'RECEIPT' else 0,
-                "Keluar": abs(qty) if row['movement_type'] == 'ISSUE' else 0,
-                "Biaya": cost, "Total": abs(qty * cost), "Saldo Qty": running_qty, "Saldo Nilai": running_value
-            })
-    df_rep = pd.DataFrame(report_data)
-    if df_rep.empty: return df_rep
-    df_rep.columns = ['Produk', 'Tanggal', 'Jenis', 'Ref', 'Masuk', 'Keluar', 'Biaya Satuan', 'Total', 'Saldo Qty', 'Saldo Nilai']
-    is_first = df_rep.groupby('Produk').cumcount() == 0
-    df_rep['Produk'] = np.where(is_first, df_rep['Produk'], '')
-    return df_rep
-
-def to_excel_bytes(reports):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        for name, df in reports.items():
-            if isinstance(df, pd.DataFrame): df.to_excel(writer, sheet_name=name[:30], index=False)
-    return output.getvalue()
-
-def generate_reports():
-    today = date.today()
-    if "end_date" not in st.session_state: st.session_state.end_date = today
-    if "start_date" not in st.session_state: st.session_state.start_date = date(2025, 10, 31)
-    start_date = st.sidebar.date_input("Tanggal Mulai", value=st.session_state.start_date)
-    end_date = st.sidebar.date_input("Tanggal Akhir", value=st.session_state.end_date)
-    
-    df_merged, df_coa, df_moves = get_base_data_and_filter(start_date, end_date)
-    df_gj = create_general_journal_report(df_merged)
-    df_gl = create_general_ledger_report(df_merged, df_coa)
-    df_tb = calculate_trial_balance(df_merged, df_coa)
-    
-    if not df_merged.empty and 'journal_id' in df_merged.columns:
-        df_before = df_merged[df_merged['journal_id'] < 200]
-        df_ajp = df_merged[df_merged['journal_id'] >= 200]
-    else: df_before = df_merged; df_ajp = pd.DataFrame(columns=df_merged.columns)
-    
-    df_tb_before = calculate_trial_balance(df_before, df_coa)
-    df_adj_only = calculate_trial_balance(df_ajp, df_coa)
-    
-    df_ws = df_coa[['account_code', 'account_name', 'account_type', 'normal_balance']].copy()
-    df_ws.columns = ['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Saldo Normal']
-    df_ws = df_ws.merge(df_tb_before[['Kode Akun', 'Debit', 'Kredit', 'Tipe_Num']], on='Kode Akun', how='left', suffixes=('', '_Before')).fillna(0)
-    df_ws.rename(columns={'Debit': 'TB Debit', 'Kredit': 'TB Kredit'}, inplace=True)
-    df_ws = df_ws.merge(df_adj_only[['Kode Akun', 'Debit', 'Kredit']], on='Kode Akun', how='left', suffixes=('', '_Adj')).fillna(0)
-    df_ws.rename(columns={'Debit': 'MJ Debit', 'Kredit': 'MJ Kredit'}, inplace=True)
-    
-    def calc_adj(row):
-        net = (row['TB Debit'] - row['TB Kredit']) + (row['MJ Debit'] - row['MJ Kredit'])
-        if row['Saldo Normal'] == 'Debit': return max(0, net), max(0, -net)
-        else: return max(0, -net), max(0, net)
-    df_ws[['Debit', 'Kredit']] = df_ws.apply(lambda x: calc_adj(x), axis=1, result_type='expand')
-    
-    df_final_rep_source = df_ws[['Kode Akun', 'Nama Akun', 'Tipe Akun', 'Debit', 'Kredit', 'Tipe_Num']].copy()
-    net_inc, df_is, df_re, df_bs, _ = calculate_closing_and_reporting_data(df_final_rep_source)
-    
-    df_ws_display = df_ws[['Kode Akun', 'Nama Akun', 'TB Debit', 'TB Kredit', 'MJ Debit', 'MJ Kredit', 'Debit', 'Kredit']]
-    df_ws_display.rename(columns={'Debit': 'TB ADJ Debit', 'Kredit': 'TB ADJ Kredit'}, inplace=True)
-    
-    return {
-        "Jurnal Umum": df_gj, "Buku Besar": df_gl, "Kertas Kerja": df_ws_display,
-        "Laporan Laba Rugi": df_is, "Laporan Perubahan Modal": df_re,
-        "Laporan Posisi Keuangan": df_bs, "Laporan Arus Kas": create_cash_flow_detailed(df_merged),
-        "Kartu Persediaan": create_inventory_movement_report(df_moves), "Laba Bersih": net_inc
-    }
-
-def show_reports_page():
-    st.title("📊 Laporan Keuangan")
-    st.sidebar.header("Filter")
-    if st.sidebar.button("🔄 Refresh Data Real-time"): st.cache_data.clear(); st.rerun()
-    reports = generate_reports()
-    
-    def fmt_df(df):
-        d = df.copy()
-        for c in d.columns:
-            if any(x in c for x in ['Debit', 'Kredit', 'Jumlah', 'Total', 'Saldo Nilai', 'Biaya']):
-                d[c] = d[c].apply(lambda x: format_rupiah(x) if isinstance(x, (int, float)) else x)
-        return d
-
-    st.header("1. Jurnal Umum"); st.dataframe(fmt_df(reports["Jurnal Umum"]), use_container_width=True, hide_index=True)
-    st.header("2. Buku Besar"); st.dataframe(fmt_df(reports["Buku Besar"]), use_container_width=True, hide_index=True)
-    st.header("3. Kertas Kerja (Worksheet)"); st.dataframe(fmt_df(reports["Kertas Kerja"]), use_container_width=True, hide_index=True)
-    c1, c2 = st.columns(2)
-    with c1: st.header("4. Laporan Laba Rugi"); st.dataframe(fmt_df(reports["Laporan Laba Rugi"]), use_container_width=True, hide_index=True)
-    with c2: st.header("5. Laporan Perubahan Modal"); st.dataframe(fmt_df(reports["Laporan Perubahan Modal"]), use_container_width=True, hide_index=True)
-    st.header("6. Laporan Posisi Keuangan"); st.dataframe(fmt_df(reports["Laporan Posisi Keuangan"]), use_container_width=True, hide_index=True)
-    st.header("7. Laporan Arus Kas"); st.dataframe(fmt_df(reports["Laporan Arus Kas"]), use_container_width=True, hide_index=True)
-    st.header("8. Kartu Persediaan"); st.dataframe(fmt_df(reports["Kartu Persediaan"]), use_container_width=True, hide_index=True)
-    st.download_button("📥 Download Excel", data=to_excel_bytes(reports), file_name="Laporan_Keuangan.xlsx")
-
-if __name__ == "__main__":
-    show_reports_page()
+if __name__ == "__main__": show_reports_page()
