@@ -75,7 +75,7 @@ def show_cart_and_payment():
     st.write(f"**Total: Rp {total:,}**")
 
     st.write("### Alamat Pengiriman")
-    address = st.text_area("Masukkan alamat lengkap Anda", placeholder="Jl. Kopi No. 1, Jakarta")
+    address = st.text_area("Masukkan alamat lengkap Anda", placeholder="Jl. Kopi No. 1, Semarang")
 
     if st.button("Bayar Sekarang"):
         if not address:
