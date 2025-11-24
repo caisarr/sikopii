@@ -23,8 +23,12 @@ def fetch_all_accounting_data():
         coa = supabase.table("chart_of_accounts").select("*").execute()
         
         df_ent = pd.DataFrame(entries.data)
+        # Pre-process tanggal di level fetch untuk keamanan
         if not df_ent.empty:
             df_ent['transaction_date'] = pd.to_datetime(df_ent['transaction_date'], errors='coerce')
+            # Hapus timezone jika ada
+            if df_ent['transaction_date'].dt.tz is not None:
+                 df_ent['transaction_date'] = df_ent['transaction_date'].dt.tz_localize(None)
             df_ent['transaction_date'] = df_ent['transaction_date'].dt.normalize()
         else:
             df_ent = pd.DataFrame(columns=['id', 'transaction_date', 'description', 'order_id'])
@@ -46,7 +50,11 @@ def get_data(start, end):
     if ent.empty or lines.empty:
         return pd.DataFrame(columns=['account_code', 'account_name', 'transaction_date', 'debit_amount', 'credit_amount', 'journal_id', 'description_entry', 'id']), d["coa"], d["mov"]
     
-    ent['transaction_date'] = ent['transaction_date'].astype('datetime64[ns]')
+    # [FIX] Konversi Tanggal yang Aman dari Timezone Error
+    ent['transaction_date'] = pd.to_datetime(ent['transaction_date'])
+    if ent['transaction_date'].dt.tz is not None:
+        ent['transaction_date'] = ent['transaction_date'].dt.tz_localize(None)
+    
     filt = ent.loc[ent['transaction_date'] <= pd.to_datetime(end)].copy()
     
     if 'description' in filt.columns: filt.rename(columns={'description': 'description_entry'}, inplace=True)
@@ -66,6 +74,7 @@ def calc_tb(df, coa):
         tb['Tipe_Num'] = tb['account_code'].str[0].astype(int)
         tb['Net'] = tb['D'] - tb['C']
         
+        # Logika: Jika Net Positif, itu Debit. Jika Net Negatif, itu Kredit.
         tb['Debit'] = tb['Net'].apply(lambda x: x if x > 0 else 0)
         tb['Kredit'] = tb['Net'].apply(lambda x: abs(x) if x < 0 else 0)
     
@@ -110,6 +119,7 @@ def report_gl(df, coa):
     return fin
 
 def report_inv(df):
+    """Laporan Kartu Persediaan (QTY TIDAK RP)"""
     if df.empty: return pd.DataFrame()
     if 'movement_date' in df.columns: df['movement_date'] = pd.to_datetime(df['movement_date']).dt.strftime('%Y-%m-%d')
     df['p_name'] = df['products'].apply(lambda x: x.get('name') if isinstance(x, dict) else 'Unknown')
@@ -135,18 +145,9 @@ def generate_reports():
     
     df, coa, mov = get_data(s, e)
     
-    # --- LOGIKA BARU ---
-    # Pisahkan berdasarkan DESKRIPSI, bukan ID.
-    # Semua yang mengandung kata 'AJP' di deskripsi masuk ke MJ (Penyesuaian)
-    # Sisanya (termasuk transaksi baru ID > 205) masuk ke TB (Normal Transaction)
-    
-    if not df.empty and 'description_entry' in df:
-        # Filter case-insensitive untuk 'AJP'
-        is_ajp = df['description_entry'].str.contains('AJP', case=False, na=False)
-        pre = df[~is_ajp] # Regular (TB)
-        ajp = df[is_ajp]  # Adjustments (MJ)
-    else: 
-        pre = df; ajp = df[0:0]
+    if not df.empty and 'journal_id' in df:
+        pre = df[df['journal_id'] < 200]; ajp = df[df['journal_id'] >= 200]
+    else: pre = df; ajp = df[0:0]
     
     tb_pre = calc_tb(pre, coa); tb_ajp = calc_tb(ajp, coa)
     
